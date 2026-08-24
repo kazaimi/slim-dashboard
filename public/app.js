@@ -23,6 +23,10 @@ const elements = {
   geiliModelCount: document.querySelector("#geiliModelCount"),
   geiliEmptyState: document.querySelector("#geiliEmptyState"),
   healthFrame: document.querySelector("#healthFrame"),
+  catalogBody: document.querySelector("#catalogBody"),
+  catalogCount: document.querySelector("#catalogCount"),
+  catalogEmptyState: document.querySelector("#catalogEmptyState"),
+  catalogFrame: document.querySelector("#catalogFrame"),
   toast: document.querySelector("#toast"),
   toastIcon: document.querySelector("#toastIcon"),
   toastTitle: document.querySelector("#toastTitle"),
@@ -459,7 +463,7 @@ function createGeiliRow(provider, model) {
     });
     actionCell.append(deployBtn);
   } else {
-    actionCell.innerHTML = `<span class="deployed-mark" title="Already configured in opencode">✓</span>`;
+    actionCell.innerHTML = `<span class="deployed-mark" title="Already configured in opencode.jsonc">Deployed</span>`;
   }
 
   row.append(modelCell, groupCell, priceCell, stabilityCell, actionCell);
@@ -488,6 +492,141 @@ function renderGeiliModels(state) {
   elements.geiliEmptyState.hidden = rows.length > 0;
   elements.geiliModelBody.closest("table").hidden = rows.length === 0;
   elements.geiliModelCount.textContent = String(rows.length);
+  renderCatalog(state);
+}
+
+const CATALOG_KEY_PREFIX = "__catalog__";
+
+function catalogGroups(state) {
+  return Object.keys(state?.price?.prices || {});
+}
+
+function createTargetSelect(state) {
+  const select = document.createElement("select");
+  select.className = "group-select target-select";
+  const mapped = Object.entries(state.providerMap || {}).filter(([, m]) => m.priceGroup);
+  for (const [pid] of mapped) {
+    const option = document.createElement("option");
+    option.value = pid;
+    option.textContent = pid;
+    select.append(option);
+  }
+  const newOption = document.createElement("option");
+  const prefixes = [...new Set(mapped.map(([pid]) => pid.split("_")[0] || "relay"))];
+  newOption.value = "__new__";
+  newOption.dataset.prefix = prefixes[0] || "relay";
+  newOption.textContent = "+ New provider";
+  select.append(newOption);
+  if (!mapped.length) select.value = "__new__";
+  return select;
+}
+
+function deriveNewProviderId(state, modelId, prefix) {
+  const base = `${prefix}_${String(modelId).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`;
+  const existing = new Set((state.providers || []).map((p) => p.id));
+  let id = base;
+  let n = 2;
+  while (existing.has(id)) id = `${base}_${n++}`;
+  return id;
+}
+
+async function deployCatalogModel(state, modelId, groupId, targetProvider, relayId, button) {
+  button.disabled = true;
+  button.textContent = "Deploying…";
+  try {
+    const isNew = targetProvider === "__new__";
+    const providerId = isNew
+      ? deriveNewProviderId(state, modelId, button.dataset.newPrefix || "relay")
+      : targetProvider;
+    const response = await fetch("/api/deploy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ provider: providerId, model: modelId, relay: relayId }),
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || !result?.ok) throw new Error(result?.error || "deploy rejected");
+    showToast("success", "Model deployed", result.message + " Reloading…");
+    setTimeout(() => loadState(), 1200);
+  } catch (error) {
+    showToast("error", "Deploy failed", error.message || "Could not write to the opencode config.");
+    button.disabled = false;
+    button.textContent = "Deploy";
+  }
+}
+
+function renderCatalog(state) {
+  const deployedModels = new Set(
+    (state.providers || []).flatMap((provider) => (provider.models || []).map((model) => model.id))
+  );
+  const firstRelayId = Object.keys(state.relays || {})[0];
+  const rows = [];
+  for (const modelId of catalogGroups(state)) {
+    if (deployedModels.has(modelId)) continue;
+
+    const row = document.createElement("tr");
+    row.className = "catalog-row";
+
+    const modelCell = document.createElement("td");
+    modelCell.className = "agent-name";
+    modelCell.textContent = modelId;
+
+    const groups = state.price.prices[modelId] || {};
+    const groupCell = document.createElement("td");
+    const groupSelect = document.createElement("select");
+    groupSelect.className = "group-select";
+    for (const groupId of Object.keys(groups)) {
+      const option = document.createElement("option");
+      option.value = groupId;
+      const groupName = state.priceGroupNames?.[groupId] || "未命名渠道";
+      option.textContent = `${groupId} · ${groupName}`;
+      groupSelect.append(option);
+    }
+    const storedGroup = getSelectedGroup(CATALOG_KEY_PREFIX, modelId, null);
+    if (storedGroup && groups[storedGroup]) groupSelect.value = storedGroup;
+    groupSelect.addEventListener("change", () => {
+      setSelectedGroup(CATALOG_KEY_PREFIX, modelId, groupSelect.value);
+      renderCatalog(dashboardState);
+    });
+    groupCell.append(groupSelect);
+
+    const priceCell = document.createElement("td");
+    priceCell.className = "price-column";
+    const pill = createPricePill(groups[groupSelect.value]);
+    if (pill) priceCell.append(pill);
+    else priceCell.textContent = "–";
+
+    const targetCell = document.createElement("td");
+    const targetSelect = createTargetSelect(state);
+    targetCell.append(targetSelect);
+
+    const actionCell = document.createElement("td");
+    actionCell.className = "action-column";
+    const deployBtn = document.createElement("button");
+    deployBtn.type = "button";
+    deployBtn.className = "deploy-btn";
+    deployBtn.textContent = "Deploy";
+    deployBtn.title = `Add ${modelId} to opencode.jsonc`;
+    const setPrefix = () => {
+      const opt = targetSelect.selectedOptions[0];
+      deployBtn.dataset.newPrefix = opt?.dataset.prefix || "relay";
+    };
+    setPrefix();
+    targetSelect.addEventListener("change", setPrefix);
+    deployBtn.addEventListener("click", () => {
+      const mapping = state.providerMap?.[targetSelect.value];
+      deployCatalogModel(state, modelId, groupSelect.value, targetSelect.value, mapping?.relay || firstRelayId, deployBtn);
+    });
+    actionCell.append(deployBtn);
+
+    row.append(modelCell, groupCell, priceCell, targetCell, actionCell);
+    rows.push(row);
+  }
+
+  elements.catalogBody.replaceChildren(...rows);
+  elements.catalogFrame.setAttribute("aria-busy", "false");
+  elements.catalogCount.textContent = String(rows.length);
+  elements.catalogEmptyState.hidden = rows.length > 0;
+  elements.catalogBody.closest("table").hidden = rows.length === 0;
 }
 
 function renderState(state) {
@@ -692,14 +831,25 @@ elements.saveButton.addEventListener("click", saveChanges);
 
 elements.tokenButton.addEventListener("click", async () => {
   elements.tokenButton.disabled = true;
+  setStatus("loading", "Syncing token");
   try {
     const response = await fetch("/api/token-sync", { method: "POST" });
     const result = await response.json().catch(() => null);
-    if (!response.ok || !result?.ok) throw new Error(result?.error || "sync failed to start");
-    showToast("success", "Token sync started", "Requires Chrome running with remote debugging. Reloading in a few seconds...");
-    setTimeout(() => window.location.reload(), 8000);
+    if (!response.ok || !result?.ok) throw new Error(result?.error || "sync request failed");
+    const okItems = (result.results || []).filter((r) => r.ok);
+    const failItems = (result.results || []).filter((r) => !r.ok);
+    if (okItems.length) {
+      const detail = okItems.map((r) => `${r.relayId}: ${r.source}`).join("; ");
+      showToast("success", "Token synced", detail + " Restarting dashboard…");
+      setTimeout(() => window.location.reload(), 4000);
+    } else {
+      const reason = failItems.map((r) => r.error).join(" | ") || "unknown error";
+      showToast("error", "Token not synced", reason);
+      setStatus("live", "Loaded");
+    }
   } catch (error) {
     showToast("error", "Token sync failed", error.message);
+    setStatus("live", "Loaded");
   } finally {
     elements.tokenButton.disabled = false;
   }

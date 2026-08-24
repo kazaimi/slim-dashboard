@@ -12,6 +12,7 @@ const path = require("path");
 const os = require("os");
 const { spawn } = require("node:child_process");
 const { deployModel } = require("./scripts/deploy-opencode");
+const { syncTokens } = require("./scripts/sync-token");
 
 const ROOT = __dirname;
 const HOMEDIR = process.env.USERPROFILE || process.env.HOME || os.homedir();
@@ -592,14 +593,22 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && p === "/api/token-sync") {
     try {
-      const child = spawn(process.execPath, [path.join(ROOT, "scripts", "sync-token.js")], {
-        cwd: ROOT,
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-      });
-      child.unref();
-      sendJson(res, 200, { ok: true, started: true, note: "token sync launched; dashboard will restart automatically" });
+      const body = await readBody(req);
+      // Run the harvest synchronously so the UI gets real per-relay results.
+      // Restart is deferred: respawn ourselves (with saved token) after the
+      // response has been flushed, otherwise we would kill our own request.
+      const { results } = await syncTokens({ only: body.relay || null, skipRestart: true });
+      if (results.some((r) => r.ok)) {
+        setTimeout(() => {
+          spawn(process.execPath, [path.join(ROOT, "scripts", "sync-token.js"), "--restart-existing"], {
+            cwd: ROOT,
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+          }).unref();
+        }, 1500);
+      }
+      sendJson(res, 200, { ok: true, results });
     } catch (e) {
       sendJson(res, 500, { ok: false, error: e.message });
     }

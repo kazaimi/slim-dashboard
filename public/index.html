@@ -144,6 +144,36 @@
             </div>
           </div>
         </section>
+
+        <section class="workspace" aria-labelledby="catalogTitle">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Relay catalog</p>
+              <h2 id="catalogTitle">Deployable models</h2>
+            </div>
+            <p class="section-meta"><span id="catalogCount">0</span> models not yet in opencode <span aria-hidden="true">/</span> Pick a group and target provider, then deploy</p>
+          </div>
+
+          <div class="table-frame" id="catalogFrame" aria-busy="false">
+            <table>
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Group</th>
+                  <th class="price-column">Price <span class="th-note">$/1M</span></th>
+                  <th>Deploy to</th>
+                  <th class="action-column"></th>
+                </tr>
+              </thead>
+              <tbody id="catalogBody"></tbody>
+            </table>
+            <div class="empty-state" id="catalogEmptyState">
+              <div class="empty-state__mark" aria-hidden="true">✓</div>
+              <h3>Everything is deployed</h3>
+              <p>All models offered by your relays are already configured in opencode.jsonc.</p>
+            </div>
+          </div>
+        </section>
       </main>
     </div>
 

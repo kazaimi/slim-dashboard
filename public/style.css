@@ -681,7 +681,11 @@ tbody .stability-column {
 
 .deployed-mark {
   color: #4ade80;
-  font-size: 14px;
+  font-size: 12px;
+}
+
+.target-select {
+  max-width: 160px;
 }
 
 .model-select option,
