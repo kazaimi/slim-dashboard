@@ -1,0 +1,13 @@
+# runtime data & local config (may contain environment-specific values)
+config.json
+price-fallback*.json
+stability-cache*.json
+opencode.jsonc.bak
+
+# dependencies
+node_modules/
+
+# logs & OS noise
+*.log
+.DS_Store
+Thumbs.db

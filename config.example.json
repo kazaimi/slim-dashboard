@@ -1,0 +1,101 @@
+{
+  "$comment": [
+    "slim-dashboard runtime configuration.",
+    "Copy this file to config.json (it is gitignored) and adjust freely.",
+    "Every field is optional - without a config.json the server uses the",
+    "built-in GeiliAPI defaults so the dashboard works out of the box.",
+    "",
+    "To support another relay station add an entry under \"relays\":",
+    "  type            adapter id. Built-in: \"geiliapi\". See README for writing your own.",
+    "  baseURL         relay root URL",
+    "  tokenEnv        env var(s) holding the monitor/session token (first match wins)",
+    "  pricingPath     path to the static JS bundle that embeds groupPrices",
+    "  monitorPath     path to the channel-monitor JSON API",
+    "  providers       opencode provider id -> { priceGroup, channel, groupName }",
+    "  priceGroupNames pretty names shown in the group dropdown",
+    "  overrides       rewrite prices: useOfficial=true shows official price instead",
+    "                  of official x multiplier; multiplier=N recomputes as official x N.",
+    "                  \"models\" accepts exact ids or \"prefix-*\" globs.",
+    "  syntheticGroups virtual groups computed from an existing base group:",
+    "                  actual = officialPrice x multiplier (own id, e.g. \"heavy\").",
+    "  tokenSync       browser token harvesting via Chrome CDP (--remote-debugging-port)",
+    "  providerTemplate used when one-click deploy creates a brand-new provider"
+  ],
+  "port": 6388,
+  "relays": {
+    "geiliapi": {
+      "name": "GeiliAPI",
+      "type": "geiliapi",
+      "baseURL": "https://sub.geiliapi.com",
+      "tokenEnv": ["GEILI_PLUGIN_TOKEN"],
+      "pricingPath": "/model-pricing/assets/index-kczjgnt4.js",
+      "monitorPath": "/api/v1/channel-monitors",
+      "providers": {
+        "geili_openai": { "priceGroup": "27", "channel": "GPT 给力 Pro", "groupName": "GPT 给力 Pro" },
+        "geili_grok": { "priceGroup": "heavy", "channel": "Grok（Heavy）", "groupName": "Grok Heavy" },
+        "geili_guomo": { "priceGroup": "82", "channel": "国模综合", "groupName": "国模综合" },
+        "geili_deepseek_flash": { "priceGroup": "flash-low", "channel": "福利 Flash", "groupName": "福利 Flash" },
+        "geili_api": { "priceGroup": "47", "channel": "CC-kiro", "groupName": "CC-Kiro" },
+        "geili_gemini": { "priceGroup": "41", "channel": "Gemini", "groupName": "Gemini" }
+      },
+      "priceGroupNames": {
+        "4": "Plus/Pro 混合",
+        "27": "GPT 给力 Pro",
+        "41": "Gemini",
+        "46": "CC-Max",
+        "47": "CC-Kiro",
+        "67": "Grok",
+        "80": "Pro 更稳定",
+        "82": "国模综合",
+        "heavy": "Grok Heavy",
+        "flash-low": "福利 Flash"
+      },
+      "overrides": [
+        {
+          "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
+          "group": "82",
+          "useOfficial": true,
+          "currency": "CNY"
+        },
+        {
+          "models": ["gpt-*"],
+          "group": "4",
+          "multiplier": 0.15
+        }
+      ],
+      "syntheticGroups": [
+        {
+          "id": "heavy",
+          "name": "Grok Heavy",
+          "baseGroup": "67",
+          "models": ["grok-4.5", "grok-4.6"],
+          "multiplier": 0.15,
+          "stabilityChannel": "Grok（Heavy）"
+        },
+        {
+          "id": "flash-low",
+          "name": "福利 Flash",
+          "baseGroup": "82",
+          "models": ["deepseek-v4-flash"],
+          "multiplier": 0.01,
+          "currency": "CNY",
+          "stabilityChannel": "福利 Flash"
+        }
+      ],
+      "tokenSync": {
+        "cdpUrl": "http://127.0.0.1:9222",
+        "sitePattern": "geiliapi.com",
+        "authPageHint": "/monitor",
+        "storageKeys": { "auth_token": 100, "access_token": 90 },
+        "cookieNames": ["token", "access_token", "session_token"],
+        "excludePattern": "(refresh|expires|user)"
+      },
+      "providerTemplate": {
+        "npm": "@ai-sdk/openai",
+        "baseURL": "https://sub.geiliapi.com/v1",
+        "apiKeyEnvPrefix": "GEILI_",
+        "defaults": { "context": 128000, "output": 8192 }
+      }
+    }
+  }
+}
