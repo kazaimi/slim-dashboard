@@ -61,7 +61,15 @@ const DEFAULT_RELAY = {
     { id: "heavy", name: "Grok Heavy", baseGroup: "67", models: ["grok-4.5", "grok-4.6"], multiplier: 0.15 },
     { id: "flash-low", name: "福利 Flash", baseGroup: "82", models: ["deepseek-v4-flash"], multiplier: 0.01, currency: "CNY" },
   ],
-  tokenSync: null,
+  tokenSync: {
+    cdpUrl: "http://127.0.0.1:9222",
+    sitePattern: "geiliapi.com",
+    authPageHint: "/monitor",
+    storageKeys: { auth_token: 100 },
+    cookieNames: ["token", "access_token", "session_token"],
+    excludePattern: "(refresh|expires|user)",
+    chromePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  },
   providerTemplate: {
     npm: "@ai-sdk/openai",
     baseURL: "https://sub.geiliapi.com/v1",
@@ -546,6 +554,53 @@ async function readBody(req) {
   });
 }
 
+function launchDebugChrome(relay) {
+  const sync = relay.tokenSync || {};
+  const chromePath = sync.chromePath || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  if (!fs.existsSync(chromePath)) return { ok: false, error: `chrome.exe not found at ${chromePath} (set relays.<id>.tokenSync.chromePath)` };
+
+  const localAppData = process.env.LOCALAPPDATA || path.join(HOMEDIR, "AppData", "Local");
+  const sourceProfile = sync.sourceProfileDir || path.join(localAppData, "Google", "Chrome", "User Data");
+  const debugProfile = sync.debugProfileDir || path.join(localAppData, "Google", "Chrome", "Slim Dashboard Debug User Data");
+
+  // First run only: clone the default profile (minus caches) so existing
+  // relay logins carry over into the debug instance.
+  if (!fs.existsSync(path.join(debugProfile, "Local State"))) {
+    try {
+      fs.mkdirSync(debugProfile, { recursive: true });
+      fs.copyFileSync(path.join(sourceProfile, "Local State"), path.join(debugProfile, "Local State"));
+      const srcDefault = path.join(sourceProfile, "Default");
+      if (fs.existsSync(srcDefault)) {
+        const exclude = new Set(["cache", "code cache", "gpucache", "dawncache", "shadercache", "grshadercache", "crashpad", "browsermetrics", "media cache", "componentcrcache", "temp file"]);
+        fs.cpSync(srcDefault, path.join(debugProfile, "Default"), {
+          recursive: true,
+          force: true,
+          filter: (src) => {
+            const rel = path.relative(srcDefault, src);
+            if (!rel) return true;
+            return !exclude.has(rel.split(path.sep)[0].toLowerCase());
+          },
+        });
+      }
+    } catch (e) {
+      return { ok: false, error: `preparing debug profile failed: ${e.message}` };
+    }
+  }
+
+  let port = 9222;
+  try { port = new URL(sync.cdpUrl || "http://127.0.0.1:9222").port || 9222; } catch {}
+  const startUrl = sync.startUrl || `${relay.baseURL}${sync.authPageHint || ""}`;
+  const child = spawn(chromePath, [
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${debugProfile}`,
+    "--profile-directory=Default",
+    "--no-first-run",
+    startUrl,
+  ], { detached: true, stdio: "ignore", windowsHide: false });
+  child.unref();
+  return { ok: true, message: `Debug Chrome launched on port ${port}; open ${startUrl}` };
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.pathname;
@@ -587,6 +642,17 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.ok ? 200 : 400, result);
     } catch (e) {
       sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && p === "/api/open-debug-chrome") {
+    try {
+      const body = await readBody(req);
+      const relay = CONFIG.relays[body.relay] || Object.values(CONFIG.relays)[0];
+      sendJson(res, 200, launchDebugChrome(relay));
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e.message });
     }
     return;
   }

@@ -14,6 +14,7 @@ const elements = {
   stateLabel: document.querySelector("#stateLabel"),
   refreshButton: document.querySelector("#refreshButton"),
   tokenButton: document.querySelector("#tokenButton"),
+  chromeButton: document.querySelector("#chromeButton"),
   saveButton: document.querySelector("#saveButton"),
   saveLabel: document.querySelector("#saveLabel"),
   emptyState: document.querySelector("#emptyState"),
@@ -828,6 +829,20 @@ elements.tableBody.addEventListener("dragend", () => {
 elements.refreshButton.addEventListener("click", () => loadState({ confirmDiscard: true }));
 elements.retryButton.addEventListener("click", () => loadState());
 elements.saveButton.addEventListener("click", saveChanges);
+
+elements.chromeButton.addEventListener("click", async () => {
+  elements.chromeButton.disabled = true;
+  try {
+    const response = await fetch("/api/open-debug-chrome", { method: "POST" });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || !result?.ok) throw new Error(result?.error || "failed to launch Chrome");
+    showToast("success", "Debug Chrome launched", "Log in to the relay page if needed, then click Sync token.");
+  } catch (error) {
+    showToast("error", "Could not open Chrome", error.message);
+  } finally {
+    elements.chromeButton.disabled = false;
+  }
+});
 
 elements.tokenButton.addEventListener("click", async () => {
   elements.tokenButton.disabled = true;
