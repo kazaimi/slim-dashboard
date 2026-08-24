@@ -72,6 +72,24 @@
           </div>
         </section>
 
+        <section class="relay-bar-section" aria-labelledby="relaysTitle">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Relays</p>
+              <h2 id="relaysTitle">Relay stations</h2>
+            </div>
+            <button class="button button--secondary" id="addRelayButton" type="button">
+              <svg class="button__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              <span>Add relay</span>
+            </button>
+          </div>
+          <div class="relay-bar" id="relayBar">
+            <span class="relay-chip skeleton-chip">loading…</span>
+          </div>
+        </section>
+
         <section class="workspace" aria-labelledby="routingTitle">
           <div class="section-heading">
             <div>
@@ -183,6 +201,33 @@
           </div>
         </section>
       </main>
+    </div>
+
+    <div class="modal-overlay" id="relayModal" hidden>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="relayModalTitle">
+        <h3 id="relayModalTitle">Add relay station</h3>
+        <p class="modal-hint">The relay is probed automatically (GeiliAPI / new-api / OpenAI-compatible). Prices are discovered right after adding.</p>
+        <label class="field">
+          <span>Name</span>
+          <input id="relayNameInput" placeholder="My Relay" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span>API base URL</span>
+          <input id="relayBaseURLInput" placeholder="https://api.example.com" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span>Token <em>(optional — can sync later)</em></span>
+          <textarea id="relayTokenInput" rows="3" placeholder="sk-…"></textarea>
+        </label>
+        <label class="field">
+          <span>Token env var <em>(optional)</em></span>
+          <input id="relayTokenEnvInput" placeholder="auto-generated if empty" autocomplete="off" />
+        </label>
+        <div class="modal-actions">
+          <button class="button button--secondary" id="relayCancelButton" type="button">Cancel</button>
+          <button class="button button--primary" id="relaySaveButton" type="button">Add relay</button>
+        </div>
+      </div>
     </div>
 
     <div class="toast-region" aria-live="polite" aria-atomic="true">

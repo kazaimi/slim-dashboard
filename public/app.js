@@ -28,6 +28,15 @@ const elements = {
   catalogCount: document.querySelector("#catalogCount"),
   catalogEmptyState: document.querySelector("#catalogEmptyState"),
   catalogFrame: document.querySelector("#catalogFrame"),
+  relayBar: document.querySelector("#relayBar"),
+  addRelayButton: document.querySelector("#addRelayButton"),
+  relayModal: document.querySelector("#relayModal"),
+  relayNameInput: document.querySelector("#relayNameInput"),
+  relayBaseURLInput: document.querySelector("#relayBaseURLInput"),
+  relayTokenInput: document.querySelector("#relayTokenInput"),
+  relayTokenEnvInput: document.querySelector("#relayTokenEnvInput"),
+  relayCancelButton: document.querySelector("#relayCancelButton"),
+  relaySaveButton: document.querySelector("#relaySaveButton"),
   toast: document.querySelector("#toast"),
   toastIcon: document.querySelector("#toastIcon"),
   toastTitle: document.querySelector("#toastTitle"),
@@ -494,6 +503,7 @@ function renderGeiliModels(state) {
   elements.geiliModelBody.closest("table").hidden = rows.length === 0;
   elements.geiliModelCount.textContent = String(rows.length);
   renderCatalog(state);
+  renderRelayBar(state);
 }
 
 const CATALOG_KEY_PREFIX = "__catalog__";
@@ -569,7 +579,11 @@ function renderCatalog(state) {
 
     const modelCell = document.createElement("td");
     modelCell.className = "agent-name";
+    const ownerRelay = state.relays?.[state.modelRelays?.[modelId]];
     modelCell.textContent = modelId;
+    if (ownerRelay) {
+      modelCell.title = `from relay: ${ownerRelay.name} (${ownerRelay.baseURL})`;
+    }
 
     const groups = state.price.prices[modelId] || {};
     const groupCell = document.createElement("td");
@@ -615,7 +629,8 @@ function renderCatalog(state) {
     targetSelect.addEventListener("change", setPrefix);
     deployBtn.addEventListener("click", () => {
       const mapping = state.providerMap?.[targetSelect.value];
-      deployCatalogModel(state, modelId, groupSelect.value, targetSelect.value, mapping?.relay || firstRelayId, deployBtn);
+      const relayId = state.modelRelays?.[modelId] || mapping?.relay || firstRelayId;
+      deployCatalogModel(state, modelId, groupSelect.value, targetSelect.value, relayId, deployBtn);
     });
     actionCell.append(deployBtn);
 
@@ -628,6 +643,119 @@ function renderCatalog(state) {
   elements.catalogCount.textContent = String(rows.length);
   elements.catalogEmptyState.hidden = rows.length > 0;
   elements.catalogBody.closest("table").hidden = rows.length === 0;
+}
+
+function renderRelayBar(state) {
+  const bar = elements.relayBar;
+  bar.replaceChildren();
+  const entries = Object.entries(state.relays || {});
+  if (!entries.length) {
+    const empty = document.createElement("span");
+    empty.className = "relay-chip";
+    empty.textContent = "No relays configured — click “Add relay”.";
+    bar.append(empty);
+    return;
+  }
+  for (const [id, relay] of entries) {
+    const chip = document.createElement("span");
+    chip.className = "relay-chip";
+
+    const dot = document.createElement("i");
+    dot.className = `chip-dot ${relay.tokenConfigured ? "chip-dot--ok" : "chip-dot--warn"}`;
+    dot.title = relay.tokenConfigured ? "Token configured" : "No token yet — stability unavailable";
+
+    const name = document.createElement("b");
+    name.textContent = relay.name || id;
+
+    const meta = document.createElement("small");
+    const typeLabel = { geiliapi: "GeiliAPI", newapi: "new-api", openai: "OpenAI 兼容" }[relay.type] || relay.type;
+    meta.textContent = `${typeLabel} · ${relay.modelCount ?? "?"} models`;
+
+    const testBtn = document.createElement("button");
+    testBtn.type = "button";
+    testBtn.className = "chip-btn";
+    testBtn.textContent = "Test";
+    testBtn.title = "Re-probe this relay now";
+    testBtn.addEventListener("click", async () => {
+      testBtn.disabled = true;
+      try {
+        const res = await fetch("/api/relay-test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id }),
+        });
+        const r = await res.json().catch(() => null);
+        if (r?.ok) showToast("success", `${relay.name} is alive`, `${r.modelCount} models via ${r.detail}`);
+        else showToast("error", `${relay.name} probe failed`, r?.detail || r?.error || "unknown");
+        loadState();
+      } finally {
+        testBtn.disabled = false;
+      }
+    });
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "chip-btn chip-btn--danger";
+    delBtn.textContent = "Remove";
+    delBtn.addEventListener("click", async () => {
+      if (!window.confirm(`Remove relay "${relay.name}"? Deployed opencode providers are kept.`)) return;
+      await fetch(`/api/relays/${encodeURIComponent(id)}`, { method: "DELETE" });
+      showToast("success", "Relay removed", relay.name);
+      loadState();
+    });
+
+    chip.append(dot, name, meta, testBtn, delBtn);
+    bar.append(chip);
+  }
+}
+
+function openRelayModal() {
+  elements.relayNameInput.value = "";
+  elements.relayBaseURLInput.value = "";
+  elements.relayTokenInput.value = "";
+  elements.relayTokenEnvInput.value = "";
+  elements.relayModal.hidden = false;
+  elements.relayNameInput.focus();
+}
+
+function closeRelayModal() {
+  elements.relayModal.hidden = true;
+}
+
+async function submitRelay() {
+  const payload = {
+    name: elements.relayNameInput.value.trim(),
+    baseURL: elements.relayBaseURLInput.value.trim(),
+    token: elements.relayTokenInput.value.trim() || undefined,
+    tokenEnv: elements.relayTokenEnvInput.value.trim() || undefined,
+  };
+  if (!payload.name || !payload.baseURL) {
+    showToast("error", "Missing fields", "Name and API base URL are required.");
+    return;
+  }
+  elements.relaySaveButton.disabled = true;
+  elements.relaySaveButton.textContent = "Probing…";
+  try {
+    const response = await fetch("/api/relays", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || !result?.ok) throw new Error(result?.error || "relay rejected");
+    closeRelayModal();
+    showToast(
+      result.detectedType === "openai" ? "success" : "success",
+      `Relay added (${result.detectedType})`,
+      `${result.modelCount} models discovered${result.detail ? ` via ${result.detail}` : ""}.`
+    );
+    setTimeout(() => loadState(), 800);
+  } catch (error) {
+    showToast("error", "Could not add relay", error.message);
+  } finally {
+    elements.relaySaveButton.disabled = false;
+    elements.relaySaveButton.textContent = "Add relay";
+  }
 }
 
 function renderState(state) {
@@ -824,6 +952,16 @@ elements.tableBody.addEventListener("dragend", () => {
   }
   clearDragClasses();
   draggedRow = null;
+});
+
+elements.addRelayButton.addEventListener("click", openRelayModal);
+elements.relayCancelButton.addEventListener("click", closeRelayModal);
+elements.relaySaveButton.addEventListener("click", submitRelay);
+elements.relayModal.addEventListener("click", (e) => {
+  if (e.target === elements.relayModal) closeRelayModal();
+});
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !elements.relayModal.hidden) closeRelayModal();
 });
 
 elements.refreshButton.addEventListener("click", () => loadState({ confirmDiscard: true }));

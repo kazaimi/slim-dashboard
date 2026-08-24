@@ -13,6 +13,7 @@ const os = require("os");
 const { spawn } = require("node:child_process");
 const { deployModel } = require("./scripts/deploy-opencode");
 const { syncTokens } = require("./scripts/sync-token");
+const { discoverRelay, verifyRelay, parseGeiliBundle, resolveEnvChain } = require("./scripts/discover-relay");
 
 const ROOT = __dirname;
 const HOMEDIR = process.env.USERPROFILE || process.env.HOME || os.homedir();
@@ -152,52 +153,6 @@ const fmtNum = (v) => Number(v).toFixed(6).replace(/0+$/, "").replace(/\.$/, "")
 // Pricing (per relay)
 // ---------------------------------------------------------------------------
 
-// Parse the price table embedded (statically) in a relay's model-pricing SPA
-// bundle. Emits modelId -> groupId -> { in, out, cache, mult, official* }.
-function grabArray(txt, startIdx) {
-  let depth = 0, i;
-  for (i = startIdx; i < txt.length; i++) {
-    const c = txt[i];
-    if (c === "[") depth++;
-    else if (c === "]") { depth--; if (depth === 0) break; }
-  }
-  let chunk = txt.slice(startIdx, i + 1);
-  chunk = chunk.replace(/`/g, '"').replace(/!1/g, "false").replace(/!0/g, "true");
-  return Function("return (" + chunk + ");")();
-}
-
-function parseGeiliBundle(txt) {
-  const result = {};
-  let idx = 0;
-  while (true) {
-    const gi = txt.indexOf("groupPrices:[", idx);
-    if (gi < 0) break;
-    const back = txt.lastIndexOf("modelId:", gi);
-    const ownMatch = txt.slice(back, back + 200).match(/modelId:`([^`]+)`/);
-    const ownId = ownMatch ? ownMatch[1] : "?";
-    let arr;
-    try { arr = grabArray(txt, txt.indexOf("[", gi)); } catch { idx = gi + 1; continue; }
-    for (const gp of arr) {
-      const items = {};
-      for (const it of gp.items || []) items[it.key] = it;
-      const inIt = items.input, outIt = items.output, cacheIt = items.cache_read;
-      result[ownId] = result[ownId] || {};
-      result[ownId][gp.groupId] = {
-        in: inIt ? inIt.actualPrice : null,
-        out: outIt ? outIt.actualPrice : null,
-        cache: cacheIt ? cacheIt.actualPrice : null,
-        mult: inIt ? inIt.effectiveMultiplier : null,
-        officialIn: inIt ? inIt.officialPrice : null,
-        officialOut: outIt ? outIt.officialPrice : null,
-        officialCache: cacheIt ? cacheIt.officialPrice : null,
-        currency: inIt?.actualCurrency || "USD",
-      };
-    }
-    idx = gi + 1;
-  }
-  return result;
-}
-
 function applyOverrides(prices, overrides) {
   for (const rule of overrides || []) {
     if (!rule?.group || !Array.isArray(rule.models)) continue;
@@ -247,8 +202,66 @@ function applySyntheticGroups(prices, syntheticGroups) {
 
 const priceCaches = new Map(); // relayId -> { table, source }
 
+async function fetchNewApiPrices(relay) {
+  const token = resolveRelayToken(relay);
+  const res = await fetch(`${relay.baseURL}/api/pricing`, {
+    headers: token ? { Authorization: `Bearer ${token.token}` } : {},
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!res.ok) throw new Error(`http_${res.status}`);
+  const data = await res.json();
+  const prices = {};
+  const items = Array.isArray(data?.data) ? data.data : [];
+  for (const m of items) {
+    if (!m?.model_name) continue;
+    const group = (Array.isArray(m.enable_groups) && m.enable_groups[0]) || "default";
+    const entry = { currency: "USD", officialIn: null, officialOut: null };
+    if (Number(m.quota_type) === 1 && m.model_price != null) {
+      entry.in = String(m.model_price);
+      entry.out = entry.in;
+    } else if (m.model_ratio != null) {
+      const inUsd = Number(m.model_ratio) * 2; // quota 500000 == $1 => ratio 1 == $2/1M
+      entry.in = fmtNum(inUsd);
+      entry.out = fmtNum(inUsd * (m.completion_ratio != null ? Number(m.completion_ratio) : 1));
+      entry.mult = String(m.model_ratio);
+    }
+    entry.officialIn = entry.in;
+    entry.officialOut = entry.out;
+    prices[m.model_name] = prices[m.model_name] || {};
+    prices[m.model_name][group] = entry;
+  }
+  return prices;
+}
+
 async function loadPriceTable(relayId, relay) {
   if (priceCaches.has(relayId)) return priceCaches.get(relayId);
+
+  if (relay.type === "newapi" || relay.type === "openai") {
+    try {
+      let table;
+      if (relay.type === "newapi") {
+        table = await fetchNewApiPrices(relay);
+      } else {
+        const tk = resolveRelayToken(relay);
+        const res = await fetch(`${relay.baseURL}/v1/models`, {
+          headers: tk ? { Authorization: `Bearer ${tk.token}` } : {},
+          signal: AbortSignal.timeout(12000),
+        });
+        const data = await res.json();
+        table = {};
+        for (const m of data?.data || []) {
+          if (m?.id) table[m.id] = { default: { in: null, out: null, currency: "USD" } };
+        }
+      }
+      priceCaches.set(relayId, { table, source: relay.type });
+      return priceCaches.get(relayId);
+    } catch {
+      priceCaches.set(relayId, { table: {}, source: "none" });
+      return priceCaches.get(relayId);
+    }
+  }
+
+  // geiliapi (default)
   try {
     const res = await fetch(`${relay.baseURL}${relay.pricingPath}`, { signal: AbortSignal.timeout(15000) });
     if (res.ok) {
@@ -448,6 +461,7 @@ async function buildMergedView() {
   const priceGroupNames = {};
   const priceSources = [];
   const stabilityNotes = [];
+  const modelRelays = {};
   let stabilityFromCache = false;
 
   for (const [relayId, relay] of Object.entries(CONFIG.relays)) {
@@ -458,6 +472,7 @@ async function buildMergedView() {
       stabilityNotes.push(`${relay.name}: ${stability.note}`);
     }
     for (const [modelId, groups] of Object.entries(price.prices || {})) {
+      if (!modelRelays[modelId]) modelRelays[modelId] = relayId;
       mergedPrices[modelId] = { ...(mergedPrices[modelId] || {}), ...groups };
     }
     for (const [channelName, data] of Object.entries(stability.channels || {})) {
@@ -492,7 +507,17 @@ async function buildMergedView() {
     stability,
     providerMap,
     priceGroupNames,
-    relays: Object.fromEntries(Object.entries(CONFIG.relays).map(([id, r]) => [id, { name: r.name, baseURL: r.baseURL }])),
+    modelRelays,
+    relays: Object.fromEntries(Object.entries(CONFIG.relays).map(([id, r]) => [
+      id,
+      {
+        name: r.name,
+        baseURL: r.baseURL,
+        type: r.type || "geiliapi",
+        tokenConfigured: Boolean(resolveRelayToken(r)),
+        modelCount: priceCaches.get(id)?.table ? Object.keys(priceCaches.get(id).table).length : 0,
+      },
+    ])),
   };
 }
 
@@ -601,6 +626,39 @@ function launchDebugChrome(relay) {
   return { ok: true, message: `Debug Chrome launched on port ${port}; open ${startUrl}` };
 }
 
+// ---------------------------------------------------------------------------
+// Relay station management (config.json persistence + live activation)
+// ---------------------------------------------------------------------------
+
+const USER_CONFIG_PATH = path.join(ROOT, "config.json");
+
+function readUserConfigFile() {
+  try {
+    return JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeUserConfigFile(cfg) {
+  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+}
+
+function activateRelay(id, entry) {
+  CONFIG.relays[id] = { ...DEFAULT_RELAY, ...entry };
+  delete CONFIG.relays[id].port;
+  priceCaches.delete(id);
+}
+
+function slugify(text) {
+  return String(text).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "relay";
+}
+
+function execSetx(name, value) {
+  const { execFileSync } = require("child_process");
+  execFileSync("setx.exe", [name, String(value)], { stdio: "ignore", windowsHide: true });
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.pathname;
@@ -678,6 +736,108 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       sendJson(res, 500, { ok: false, error: e.message });
     }
+    return;
+  }
+
+  if (req.method === "POST" && p === "/api/relays") {
+    try {
+      const body = await readBody(req);
+      const name = String(body.name || "").trim();
+      const baseURL = String(body.baseURL || "").trim().replace(/\/+$/, "");
+      if (!name) throw new Error("name is required");
+      if (!/^https?:\/\//.test(baseURL)) throw new Error("baseURL must start with http(s)://");
+
+      let id = slugify(body.id || name);
+      while (CONFIG.relays[id]) id = `${id}-2`;
+
+      // Persist token before probing so discovery can use authenticated endpoints.
+      const tokenEnv = String(body.tokenEnv || "").trim() || `${id.toUpperCase().replace(/-/g, "_")}_TOKEN`;
+      if (body.token) {
+        execSetx(tokenEnv, body.token);
+        process.env[tokenEnv] = body.token;
+      }
+
+      const probe = await discoverRelay({ baseURL, token: body.token || null });
+      const entry = {
+        name,
+        baseURL,
+        type: probe.ok ? probe.type : "openai",
+        tokenEnv: [tokenEnv],
+        monitorPath: "/api/v1/channel-monitors",
+        pricingPath: "/model-pricing/assets/index-kczjgnt4.js",
+        providers: {},
+        priceGroupNames: {},
+        overrides: [],
+        syntheticGroups: [],
+        providerTemplate: {
+          npm: "@ai-sdk/openai",
+          baseURL: `${baseURL}/v1`,
+          apiKeyEnvPrefix: "",
+          defaults: { context: 128000, output: 8192 },
+        },
+      };
+
+      activateRelay(id, entry);
+      const file = readUserConfigFile();
+      file.relays = file.relays || {};
+      file.relays[id] = JSON.parse(JSON.stringify(entry));
+      writeUserConfigFile(file);
+
+      sendJson(res, 200, {
+        ok: true,
+        id,
+        detectedType: entry.type,
+        modelCount: probe.count || 0,
+        detail: probe.detail || probe.error || "",
+        tokenSet: Boolean(body.token),
+      });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && p === "/api/relay-test") {
+    try {
+      const body = await readBody(req);
+      const relay = CONFIG.relays[body.id];
+      if (!relay) throw new Error("unknown relay");
+      const probe = await verifyRelay(relay);
+      if (probe.ok && probe.type !== relay.type) {
+        relay.type = probe.type;
+        priceCaches.delete(body.id);
+        const file = readUserConfigFile();
+        if (file.relays?.[body.id]) {
+          file.relays[body.id].type = probe.type;
+          writeUserConfigFile(file);
+        }
+      }
+      sendJson(res, 200, {
+        ok: probe.ok,
+        type: probe.type || relay.type,
+        modelCount: probe.count || 0,
+        detail: probe.detail || probe.error || "",
+      });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  if (req.method === "DELETE" && p.startsWith("/api/relays/")) {
+    const id = decodeURIComponent(p.slice("/api/relays/".length));
+    if (!CONFIG.relays[id]) {
+      sendJson(res, 404, { ok: false, error: "unknown relay" });
+      return;
+    }
+    delete CONFIG.relays[id];
+    priceCaches.delete(id);
+    const file = readUserConfigFile();
+    if (file.relays) {
+      delete file.relays[id];
+      writeUserConfigFile(file);
+    }
+    sendJson(res, 200, { ok: true, removed: id });
     return;
   }
 

@@ -1,0 +1,176 @@
+"use strict";
+
+// Relay station probing & price discovery.
+// Supports, in detection order:
+//   1. geiliapi  - static pricing SPA bundle embedding groupPrices:[...]
+//   2. new-api   - GET /api/pricing JSON (used by most Chinese relay panels)
+//   3. openai    - GET /v1/models (ids only, no prices)
+
+const { execFileSync } = require("node:child_process");
+
+function fmtNum(v) {
+  return Number(v).toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function normalizeBase(baseURL) {
+  return String(baseURL || "").trim().replace(/\/+$/, "");
+}
+
+function grabArray(txt, startIdx) {
+  let depth = 0, i;
+  for (i = startIdx; i < txt.length; i++) {
+    const c = txt[i];
+    if (c === "[") depth++;
+    else if (c === "]") { depth--; if (depth === 0) break; }
+  }
+  let chunk = txt.slice(startIdx, i + 1);
+  chunk = chunk.replace(/`/g, '"').replace(/!1/g, "false").replace(/!0/g, "true");
+  return Function("return (" + chunk + ");")();
+}
+
+function parseGeiliBundle(txt) {
+  const result = {};
+  let idx = 0;
+  while (true) {
+    const gi = txt.indexOf("groupPrices:[", idx);
+    if (gi < 0) break;
+    const back = txt.lastIndexOf("modelId:", gi);
+    const ownMatch = txt.slice(back, back + 200).match(/modelId:`([^`]+)`/);
+    const ownId = ownMatch ? ownMatch[1] : "?";
+    let arr;
+    try { arr = grabArray(txt, txt.indexOf("[", gi)); } catch { idx = gi + 1; continue; }
+    for (const gp of arr) {
+      const items = {};
+      for (const it of gp.items || []) items[it.key] = it;
+      const inIt = items.input, outIt = items.output, cacheIt = items.cache_read;
+      result[ownId] = result[ownId] || {};
+      result[ownId][gp.groupId] = {
+        in: inIt ? inIt.actualPrice : null,
+        out: outIt ? outIt.actualPrice : null,
+        cache: cacheIt ? cacheIt.actualPrice : null,
+        mult: inIt ? inIt.effectiveMultiplier : null,
+        officialIn: inIt ? inIt.officialPrice : null,
+        officialOut: outIt ? outIt.officialPrice : null,
+        officialCache: cacheIt ? cacheIt.officialPrice : null,
+        currency: inIt?.actualCurrency || "USD",
+      };
+    }
+    idx = gi + 1;
+  }
+  return result;
+}
+
+async function fetchJson(url, token) {
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!res.ok) throw new Error(`http_${res.status}`);
+  return res.json();
+}
+
+// new-api convention: quota 500000 == $1 => ratio 1 == $2 per 1M tokens.
+const NEWAPI_UNIT_USD_PER_1M = 2;
+
+function parseNewApiPricing(data) {
+  const prices = {};
+  const items = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+  for (const m of items) {
+    if (!m?.model_name) continue;
+    const group = (Array.isArray(m.enable_groups) && m.enable_groups[0]) || "default";
+    const entry = { currency: "USD", officialIn: null, officialOut: null };
+    if (Number(m.quota_type) === 1 && m.model_price != null) {
+      entry.in = fmtNum(Number(m.model_price));
+      entry.out = entry.in;
+    } else if (m.model_ratio != null) {
+      const inUsd = Number(m.model_ratio) * NEWAPI_UNIT_USD_PER_1M;
+      entry.in = fmtNum(inUsd);
+      entry.out = fmtNum(inUsd * (m.completion_ratio != null ? Number(m.completion_ratio) : 1));
+      entry.mult = String(m.model_ratio);
+    } else {
+      entry.in = null;
+      entry.out = null;
+    }
+    entry.officialIn = entry.in;
+    entry.officialOut = entry.out;
+    prices[m.model_name] = prices[m.model_name] || {};
+    prices[m.model_name][group] = entry;
+  }
+  return prices;
+}
+
+/**
+ * Probe a relay base URL and detect what it speaks.
+ * Returns { ok, type, prices, count, detail }.
+ */
+async function discoverRelay({ baseURL, token } = {}) {
+  const base = normalizeBase(baseURL);
+  if (!/^https?:\/\//.test(base)) return { ok: false, error: "baseURL must start with http(s)://" };
+
+  // 1) GeiliAPI-style static pricing bundle
+  try {
+    const res = await fetch(`${base}/model-pricing/assets/index-kczjgnt4.js`, { signal: AbortSignal.timeout(12000) });
+    if (res.ok) {
+      const txt = await res.text();
+      if (txt.includes("groupPrices:[")) {
+        const prices = parseGeiliBundle(txt);
+        if (Object.keys(prices).length) {
+          return { ok: true, type: "geiliapi", prices, count: Object.keys(prices).length, detail: "geili pricing bundle" };
+        }
+      }
+    }
+  } catch {}
+
+  // 2) new-api / one-api style pricing endpoint
+  try {
+    const data = await fetchJson(`${base}/api/pricing`, token);
+    const prices = parseNewApiPricing(data);
+    if (Object.keys(prices).length) {
+      return { ok: true, type: "newapi", prices, count: Object.keys(prices).length, detail: "/api/pricing" };
+    }
+  } catch {}
+
+  // 3) Plain OpenAI-compatible model list (no prices available)
+  try {
+    const data = await fetchJson(`${base}/v1/models`, token);
+    const ids = (Array.isArray(data?.data) ? data.data : []).map((m) => m?.id).filter(Boolean);
+    if (ids.length) {
+      const prices = {};
+      for (const id of ids) prices[id] = { default: { in: null, out: null, currency: "USD" } };
+      return { ok: true, type: "openai", prices, count: ids.length, detail: "/v1/models (prices unavailable)" };
+    }
+    return { ok: false, error: "/v1/models returned no models" };
+  } catch (e) {
+    return { ok: false, error: `could not reach relay APIs (${e.message})` };
+  }
+}
+
+/** Verify a stored relay still answers (uses its saved token when present). */
+async function verifyRelay(relay) {
+  const token = resolveEnvChain(relay.tokenEnv || []);
+  return discoverRelay({ baseURL: relay.baseURL, token });
+}
+
+function readUserEnv(name) {
+  try {
+    const out = execFileSync("reg", ["query", "HKCU\\Environment", "/v", name], { encoding: "utf8", windowsHide: true });
+    const line = (out || "").split(/\r?\n/).find((l) => /REG_SZ|REG_EXPAND_SZ/.test(l) && l.trim() !== "");
+    if (!line) return null;
+    return line.replace(/^.*REG_(EXPAND_)?SZ\s+/, "").trim();
+  } catch {
+    return null;
+  }
+}
+
+function resolveEnvChain(names) {
+  for (const n of names || []) {
+    if (process.env[n]) return process.env[n];
+  }
+  for (const n of names || []) {
+    const v = readUserEnv(n);
+    if (v) return v;
+  }
+  return null;
+}
+
+module.exports = { discoverRelay, verifyRelay, parseGeiliBundle, parseNewApiPricing, resolveEnvChain };
