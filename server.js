@@ -11,7 +11,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { spawn } = require("node:child_process");
-const { deployModel } = require("./scripts/deploy-opencode");
+const { deployModel, ensureProviderApiKey } = require("./scripts/deploy-opencode");
 const { syncTokens } = require("./scripts/sync-token");
 const { discoverRelay, verifyRelay, parseGeiliBundle, parseNewApiPricing, resolveEnvChain } = require("./scripts/discover-relay");
 const { NoticeStore } = require("./scripts/notices");
@@ -767,6 +767,13 @@ const server = http.createServer(async (req, res) => {
       // Model health with live pricing (stability needs a channel match and
       // stays "–" until the user maps one).
       if (result.ok) {
+        // If a real key is saved for this relay, swap it into the provider
+        // whenever it still carries an {env:...} placeholder. Re-deploying an
+        // existing model therefore "heals" the key without manual editing.
+        if (relay.apiKey) {
+          const keyResult = ensureProviderApiKey(CONFIG.opencodeConfigPath, body.provider, relay.apiKey);
+          if (keyResult.changed) result.message += " + API key embedded";
+        }
         const group = String(body.group || "default");
         const mapping = { priceGroup: group, channel: "", groupName: relay.priceGroupNames?.[group] || group };
         relay.providers = { ...(relay.providers || {}), [body.provider]: mapping };

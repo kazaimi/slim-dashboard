@@ -150,4 +150,29 @@ function deployModel(filePath, providerId, modelId, opts = {}) {
   };
 }
 
-module.exports = { deployModel, stripForParse, parseConfig };
+/**
+ * If a deployed provider still carries an {env:...} apiKey placeholder and a
+ * real key is now available (saved per-relay), swap it in so the provider
+ * actually authenticates. Never touches literal keys.
+ */
+function ensureProviderApiKey(filePath, providerId, apiKey) {
+  if (!apiKey) return { changed: false };
+  if (!fs.existsSync(filePath)) return { changed: false };
+  const raw = fs.readFileSync(filePath, "utf8");
+  const providerRe = new RegExp(`"${providerId}"\\s*:\\s*\\{`);
+  const m = raw.match(providerRe);
+  if (!m) return { changed: false };
+  const start = m.index;
+  const nextProvider = raw.slice(start + 1).search(new RegExp(`\\n\\s{4}"`));
+  const blockEnd = nextProvider === -1 ? raw.length : start + 1 + nextProvider;
+  const block = raw.slice(start, blockEnd);
+  const keyRe = /("apiKey"\s*:\s*")\{env:[^"]*\}(")/;
+  if (!keyRe.test(block)) return { changed: false };
+  const updatedBlock = block.replace(keyRe, `$1${apiKey}$2`);
+  const updated = raw.slice(0, start) + updatedBlock + raw.slice(blockEnd);
+  try { parseConfig(updated); } catch (e) { return { changed: false, error: e.message }; }
+  fs.writeFileSync(filePath, updated, "utf8");
+  return { changed: true };
+}
+
+module.exports = { deployModel, ensureProviderApiKey, stripForParse, parseConfig };
