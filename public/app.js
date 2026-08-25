@@ -179,7 +179,7 @@ function computeAgentValue(modelReference) {
 }
 
 function formatPrice(price) {
-  if (!price) return "\u2013";
+  if (!price || price.in == null) return "\u2013";
   const cur = price.currency === "CNY" ? "\u00a5" : "$";
   return `${cur}${price.in} / ${cur}${price.out}`;
 }
@@ -512,47 +512,57 @@ function catalogGroups(state) {
   return Object.keys(state?.price?.prices || {});
 }
 
-function createTargetSelect(state) {
+function familyOf(modelId) {
+  const s = String(modelId).toLowerCase();
+  if (/^gpt|^o\d|^chatgpt|davinci/.test(s)) return "openai";
+  if (/claude/.test(s)) return "anthropic";
+  if (/gemini|palm|bard/.test(s)) return "gemini";
+  if (/grok/.test(s)) return "grok";
+  if (/deepseek/.test(s)) return "deepseek";
+  if (/qwen|glm|thudm|kimi|moonshot|minimax|yi-|baichuan|internlm|hunyuan|spark|ernie|mimo/.test(s)) return "cn";
+  return "misc";
+}
+
+function suggestProviderId(state, relayId, modelId) {
+  const prefix = String(relayId).replace(/-/g, "_");
+  const taken = new Set((state.providers || []).map((p) => p.id));
+  let id = `${prefix}_${familyOf(modelId)}`;
+  let n = 2;
+  while (taken.has(id)) id = `${prefix}_${familyOf(modelId)}_${n++}`;
+  return id;
+}
+
+function buildTargetSelect(state, relayId, modelId) {
   const select = document.createElement("select");
   select.className = "group-select target-select";
-  const mapped = Object.entries(state.providerMap || {}).filter(([, m]) => m.priceGroup);
+  const mapped = Object.entries(state.providerMap || {}).filter(
+    ([pid, m]) => m.priceGroup && (m.relay || "geiliapi") === relayId
+  );
   for (const [pid] of mapped) {
     const option = document.createElement("option");
     option.value = pid;
     option.textContent = pid;
     select.append(option);
   }
+  const suggestion = suggestProviderId(state, relayId, modelId);
   const newOption = document.createElement("option");
-  const prefixes = [...new Set(mapped.map(([pid]) => pid.split("_")[0] || "relay"))];
   newOption.value = "__new__";
-  newOption.dataset.prefix = prefixes[0] || "relay";
-  newOption.textContent = "+ New provider";
+  newOption.dataset.suggest = suggestion;
+  newOption.textContent = `+ ${suggestion}`;
   select.append(newOption);
   if (!mapped.length) select.value = "__new__";
   return select;
 }
 
-function deriveNewProviderId(state, modelId, prefix) {
-  const base = `${prefix}_${String(modelId).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`;
-  const existing = new Set((state.providers || []).map((p) => p.id));
-  let id = base;
-  let n = 2;
-  while (existing.has(id)) id = `${base}_${n++}`;
-  return id;
-}
-
-async function deployCatalogModel(state, modelId, groupId, targetProvider, relayId, button) {
+async function deployCatalogModel(state, modelId, groupId, targetProvider, relayId, button, suggestedId) {
   button.disabled = true;
   button.textContent = "Deploying…";
   try {
-    const isNew = targetProvider === "__new__";
-    const providerId = isNew
-      ? deriveNewProviderId(state, modelId, button.dataset.newPrefix || "relay")
-      : targetProvider;
+    const providerId = targetProvider === "__new__" ? suggestedId : targetProvider;
     const response = await fetch("/api/deploy", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ provider: providerId, model: modelId, relay: relayId }),
+      body: JSON.stringify({ provider: providerId, model: modelId, relay: relayId, group: groupId }),
     });
     const result = await response.json().catch(() => null);
     if (!response.ok || !result?.ok) throw new Error(result?.error || "deploy rejected");
@@ -565,82 +575,105 @@ async function deployCatalogModel(state, modelId, groupId, targetProvider, relay
   }
 }
 
+function createCatalogRow(state, modelId, relayId) {
+  const row = document.createElement("tr");
+  row.className = "catalog-row";
+
+  const groups = state.price.prices[modelId] || {};
+
+  const modelCell = document.createElement("td");
+  modelCell.className = "agent-name";
+  const ownerRelay = state.relays?.[relayId];
+  modelCell.textContent = modelId;
+  if (ownerRelay) modelCell.title = `from relay: ${ownerRelay.name} (${ownerRelay.baseURL})`;
+
+  const groupCell = document.createElement("td");
+  const groupSelect = document.createElement("select");
+  groupSelect.className = "group-select";
+  for (const groupId of Object.keys(groups)) {
+    const option = document.createElement("option");
+    option.value = groupId;
+    const groupName = state.priceGroupNames?.[groupId] || groupId;
+    option.textContent = `${groupId} · ${groupName}`;
+    groupSelect.append(option);
+  }
+  const storedGroup = getSelectedGroup(CATALOG_KEY_PREFIX, modelId, null);
+  if (storedGroup && groups[storedGroup]) groupSelect.value = storedGroup;
+  groupSelect.addEventListener("change", () => {
+    setSelectedGroup(CATALOG_KEY_PREFIX, modelId, groupSelect.value);
+    renderCatalog(dashboardState);
+  });
+  groupCell.append(groupSelect);
+
+  const priceCell = document.createElement("td");
+  priceCell.className = "price-column";
+  const pill = createPricePill(groups[groupSelect.value]);
+  if (pill) priceCell.append(pill);
+  else priceCell.textContent = formatPrice(groups[groupSelect.value]);
+
+  const targetCell = document.createElement("td");
+  const targetSelect = buildTargetSelect(state, relayId, modelId);
+  targetCell.append(targetSelect);
+
+  const actionCell = document.createElement("td");
+  actionCell.className = "action-column";
+  const deployBtn = document.createElement("button");
+  deployBtn.type = "button";
+  deployBtn.className = "deploy-btn";
+  deployBtn.textContent = "Deploy";
+  deployBtn.title = `Add ${modelId} to opencode.jsonc`;
+  deployBtn.addEventListener("click", () => {
+    const mapping = state.providerMap?.[targetSelect.value];
+    const useRelay = relayId || mapping?.relay || Object.keys(state.relays || {})[0];
+    deployCatalogModel(
+      state,
+      modelId,
+      groupSelect.value,
+      targetSelect.value,
+      useRelay,
+      deployBtn,
+      targetSelect.selectedOptions[0]?.dataset.suggest
+    );
+  });
+  actionCell.append(deployBtn);
+
+  row.append(modelCell, groupCell, priceCell, targetCell, actionCell);
+  return row;
+}
+
 function renderCatalog(state) {
   const deployedModels = new Set(
     (state.providers || []).flatMap((provider) => (provider.models || []).map((model) => model.id))
   );
-  const firstRelayId = Object.keys(state.relays || {})[0];
+  const undeployed = catalogGroups(state).filter((modelId) => !deployedModels.has(modelId));
+
+  // Bucket undeployed models by owning relay, keeping relay config order.
+  const buckets = new Map();
+  for (const modelId of undeployed) {
+    const rid = state.modelRelays?.[modelId] || "__other__";
+    if (!buckets.has(rid)) buckets.set(rid, []);
+    buckets.get(rid).push(modelId);
+  }
+
   const rows = [];
-  for (const modelId of catalogGroups(state)) {
-    if (deployedModels.has(modelId)) continue;
-
-    const row = document.createElement("tr");
-    row.className = "catalog-row";
-
-    const modelCell = document.createElement("td");
-    modelCell.className = "agent-name";
-    const ownerRelay = state.relays?.[state.modelRelays?.[modelId]];
-    modelCell.textContent = modelId;
-    if (ownerRelay) {
-      modelCell.title = `from relay: ${ownerRelay.name} (${ownerRelay.baseURL})`;
-    }
-
-    const groups = state.price.prices[modelId] || {};
-    const groupCell = document.createElement("td");
-    const groupSelect = document.createElement("select");
-    groupSelect.className = "group-select";
-    for (const groupId of Object.keys(groups)) {
-      const option = document.createElement("option");
-      option.value = groupId;
-      const groupName = state.priceGroupNames?.[groupId] || "未命名渠道";
-      option.textContent = `${groupId} · ${groupName}`;
-      groupSelect.append(option);
-    }
-    const storedGroup = getSelectedGroup(CATALOG_KEY_PREFIX, modelId, null);
-    if (storedGroup && groups[storedGroup]) groupSelect.value = storedGroup;
-    groupSelect.addEventListener("change", () => {
-      setSelectedGroup(CATALOG_KEY_PREFIX, modelId, groupSelect.value);
-      renderCatalog(dashboardState);
-    });
-    groupCell.append(groupSelect);
-
-    const priceCell = document.createElement("td");
-    priceCell.className = "price-column";
-    const pill = createPricePill(groups[groupSelect.value]);
-    if (pill) priceCell.append(pill);
-    else priceCell.textContent = "–";
-
-    const targetCell = document.createElement("td");
-    const targetSelect = createTargetSelect(state);
-    targetCell.append(targetSelect);
-
-    const actionCell = document.createElement("td");
-    actionCell.className = "action-column";
-    const deployBtn = document.createElement("button");
-    deployBtn.type = "button";
-    deployBtn.className = "deploy-btn";
-    deployBtn.textContent = "Deploy";
-    deployBtn.title = `Add ${modelId} to opencode.jsonc`;
-    const setPrefix = () => {
-      const opt = targetSelect.selectedOptions[0];
-      deployBtn.dataset.newPrefix = opt?.dataset.prefix || "relay";
-    };
-    setPrefix();
-    targetSelect.addEventListener("change", setPrefix);
-    deployBtn.addEventListener("click", () => {
-      const mapping = state.providerMap?.[targetSelect.value];
-      const relayId = state.modelRelays?.[modelId] || mapping?.relay || firstRelayId;
-      deployCatalogModel(state, modelId, groupSelect.value, targetSelect.value, relayId, deployBtn);
-    });
-    actionCell.append(deployBtn);
-
-    row.append(modelCell, groupCell, priceCell, targetCell, actionCell);
-    rows.push(row);
+  const sectionOrder = [...Object.keys(state.relays || {}), "__other__"];
+  for (const relayId of sectionOrder) {
+    const models = buckets.get(relayId);
+    if (!models?.length) continue;
+    const relay = state.relays?.[relayId];
+    const header = document.createElement("tr");
+    header.className = "catalog-section-row";
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.innerHTML = `<b>${relay ? relay.name : "Other relays"}</b><small>${models.length} deployable</small>`;
+    header.append(cell);
+    rows.push(header);
+    for (const modelId of models) rows.push(createCatalogRow(state, modelId, relayId));
   }
 
   elements.catalogBody.replaceChildren(...rows);
   elements.catalogFrame.setAttribute("aria-busy", "false");
-  elements.catalogCount.textContent = String(rows.length);
+  elements.catalogCount.textContent = String(undeployed.length);
   elements.catalogEmptyState.hidden = rows.length > 0;
   elements.catalogBody.closest("table").hidden = rows.length === 0;
 }

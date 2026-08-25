@@ -13,7 +13,7 @@ const os = require("os");
 const { spawn } = require("node:child_process");
 const { deployModel } = require("./scripts/deploy-opencode");
 const { syncTokens } = require("./scripts/sync-token");
-const { discoverRelay, verifyRelay, parseGeiliBundle, resolveEnvChain } = require("./scripts/discover-relay");
+const { discoverRelay, verifyRelay, parseGeiliBundle, parseNewApiPricing, resolveEnvChain } = require("./scripts/discover-relay");
 
 const ROOT = __dirname;
 const HOMEDIR = process.env.USERPROFILE || process.env.HOME || os.homedir();
@@ -216,28 +216,7 @@ async function fetchNewApiPrices(relay) {
     signal: AbortSignal.timeout(12000),
   });
   if (!res.ok) throw new Error(`http_${res.status}`);
-  const data = await res.json();
-  const prices = {};
-  const items = Array.isArray(data?.data) ? data.data : [];
-  for (const m of items) {
-    if (!m?.model_name) continue;
-    const group = (Array.isArray(m.enable_groups) && m.enable_groups[0]) || "default";
-    const entry = { currency: "USD", officialIn: null, officialOut: null };
-    if (Number(m.quota_type) === 1 && m.model_price != null) {
-      entry.in = String(m.model_price);
-      entry.out = entry.in;
-    } else if (m.model_ratio != null) {
-      const inUsd = Number(m.model_ratio) * 2; // quota 500000 == $1 => ratio 1 == $2/1M
-      entry.in = fmtNum(inUsd);
-      entry.out = fmtNum(inUsd * (m.completion_ratio != null ? Number(m.completion_ratio) : 1));
-      entry.mult = String(m.model_ratio);
-    }
-    entry.officialIn = entry.in;
-    entry.officialOut = entry.out;
-    prices[m.model_name] = prices[m.model_name] || {};
-    prices[m.model_name][group] = entry;
-  }
-  return prices;
+  return parseNewApiPricing(await res.json());
 }
 
 async function loadPriceTable(relayId, relay) {
@@ -712,7 +691,8 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.provider || !body.model) throw new Error("provider and model are required");
-      const relay = CONFIG.relays[body.relay] || Object.values(CONFIG.relays)[0];
+      const relayId = body.relay && CONFIG.relays[body.relay] ? body.relay : Object.keys(CONFIG.relays)[0];
+      const relay = CONFIG.relays[relayId];
       const result = deployModel(CONFIG.opencodeConfigPath, body.provider, body.model, {
         modelName: body.name,
         context: body.context,
@@ -721,6 +701,24 @@ const server = http.createServer(async (req, res) => {
         providerTemplate: relay.providerTemplate,
         providerName: body.providerName,
       });
+
+      // Register a price mapping so the deployed model shows up under
+      // Model health with live pricing (stability needs a channel match and
+      // stays "–" until the user maps one).
+      if (result.ok) {
+        const group = String(body.group || "default");
+        const mapping = { priceGroup: group, channel: "", groupName: relay.priceGroupNames?.[group] || group };
+        relay.providers = { ...(relay.providers || {}), [body.provider]: mapping };
+        relay.priceGroupNames = { ...(relay.priceGroupNames || {}), [group]: mapping.groupName };
+        try {
+          const file = readUserConfigFile();
+          file.relays = file.relays || {};
+          file.relays[relayId] = file.relays[relayId] || JSON.parse(JSON.stringify({ ...relay, tokenSync: undefined }));
+          file.relays[relayId].providers = JSON.parse(JSON.stringify(relay.providers));
+          file.relays[relayId].priceGroupNames = JSON.parse(JSON.stringify(relay.priceGroupNames));
+          writeUserConfigFile(file);
+        } catch {}
+      }
       sendJson(res, result.ok ? 200 : 400, result);
     } catch (e) {
       sendJson(res, 400, { ok: false, error: e.message });

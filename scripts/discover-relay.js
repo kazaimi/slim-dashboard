@@ -72,29 +72,45 @@ async function fetchJson(url, token) {
 // new-api convention: quota 500000 == $1 => ratio 1 == $2 per 1M tokens.
 const NEWAPI_UNIT_USD_PER_1M = 2;
 
-function parseNewApiPricing(data) {
+function parseNewApiPricing(payload) {
   const prices = {};
-  const items = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+  const data = payload?.data;
+  const items = Array.isArray(data) ? data : Array.isArray(payload) ? payload : [];
+  const groupRatio = payload?.group_ratio || data?.group_ratio || {};
+
   for (const m of items) {
     if (!m?.model_name) continue;
-    const group = (Array.isArray(m.enable_groups) && m.enable_groups[0]) || "default";
-    const entry = { currency: "USD", officialIn: null, officialOut: null };
+    const groups =
+      Array.isArray(m.enable_groups) && m.enable_groups.length ? m.enable_groups.map(String) : ["default"];
+
+    let entry;
     if (Number(m.quota_type) === 1 && m.model_price != null) {
-      entry.in = fmtNum(Number(m.model_price));
-      entry.out = entry.in;
+      // per-call billing: model_price is dollars per request
+      entry = { in: fmtNum(Number(m.model_price)), out: fmtNum(Number(m.model_price)), perCall: true };
     } else if (m.model_ratio != null) {
       const inUsd = Number(m.model_ratio) * NEWAPI_UNIT_USD_PER_1M;
-      entry.in = fmtNum(inUsd);
-      entry.out = fmtNum(inUsd * (m.completion_ratio != null ? Number(m.completion_ratio) : 1));
-      entry.mult = String(m.model_ratio);
+      entry = {
+        in: fmtNum(inUsd),
+        out: fmtNum(inUsd * (m.completion_ratio != null ? Number(m.completion_ratio) : 1)),
+        mult: String(m.model_ratio),
+      };
     } else {
-      entry.in = null;
-      entry.out = null;
+      entry = { in: null, out: null };
     }
+    entry.currency = "USD";
     entry.officialIn = entry.in;
     entry.officialOut = entry.out;
-    prices[m.model_name] = prices[m.model_name] || {};
-    prices[m.model_name][group] = entry;
+
+    for (const g of groups) {
+      const gr = groupRatio[g] != null ? Number(groupRatio[g]) : 1;
+      const e = { ...entry };
+      if (gr !== 1 && e.in != null && !e.perCall) {
+        e.in = fmtNum(parseFloat(e.in) * gr);
+        e.out = fmtNum(parseFloat(e.out) * gr);
+      }
+      prices[m.model_name] = prices[m.model_name] || {};
+      prices[m.model_name][g] = e;
+    }
   }
   return prices;
 }

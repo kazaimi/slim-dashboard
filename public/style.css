@@ -688,6 +688,27 @@ tbody .stability-column {
   max-width: 160px;
 }
 
+.catalog-section-row td {
+  height: 40px;
+  border-bottom: 1px solid var(--border);
+  background: #0c0f13;
+}
+
+.catalog-section-row b {
+  margin-right: 10px;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.catalog-section-row small {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
 .relay-bar-section {
   margin-bottom: 30px;
 }
