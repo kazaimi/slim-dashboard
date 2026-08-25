@@ -83,17 +83,24 @@ function loadConfig() {
   const file = path.join(ROOT, "config.json");
   try {
     const user = JSON.parse(fs.readFileSync(file, "utf8"));
-    const relays = {};
+    const userRelays = {};
     for (const [id, relay] of Object.entries(user.relays || {})) {
-      relays[id] = { ...DEFAULT_RELAY, ...relay };
-      delete relays[id].port;
+      userRelays[id] = { ...relay };
     }
+    // The built-in GeiliAPI relay always exists as the baseline station;
+    // a config.json entry with the same id overrides its fields.
+    const relays = { geiliapi: { ...DEFAULT_RELAY, ...(userRelays.geiliapi || {}), port: undefined } };
+    for (const [id, relay] of Object.entries(userRelays)) {
+      if (id === "geiliapi") continue;
+      relays[id] = { ...DEFAULT_RELAY, ...relay };
+    }
+    for (const r of Object.values(relays)) delete r.port;
     return {
       port: user.port || process.env.PORT || 6388,
       opencodeConfigPath: user.opencodeConfigPath || path.join(HOMEDIR, ".config", "opencode", "opencode.jsonc"),
       slimConfigPath: user.slimConfigPath || path.join(HOMEDIR, ".config", "opencode", "oh-my-opencode-slim.json"),
       dataDir: user.dataDir || ROOT,
-      relays: Object.keys(relays).length ? relays : { geiliapi: DEFAULT_RELAY },
+      relays,
     };
   } catch {
     return {
@@ -758,6 +765,8 @@ const server = http.createServer(async (req, res) => {
       }
 
       const probe = await discoverRelay({ baseURL, token: body.token || null });
+      let sitePattern = "localhost";
+      try { sitePattern = new URL(baseURL).hostname.replace(/^www\./, ""); } catch {}
       const entry = {
         name,
         baseURL,
@@ -769,6 +778,11 @@ const server = http.createServer(async (req, res) => {
         priceGroupNames: {},
         overrides: [],
         syntheticGroups: [],
+        tokenSync: {
+          ...(DEFAULT_RELAY.tokenSync || {}),
+          sitePattern,
+          authPageHint: "",
+        },
         providerTemplate: {
           npm: "@ai-sdk/openai",
           baseURL: `${baseURL}/v1`,

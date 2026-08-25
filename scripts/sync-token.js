@@ -16,12 +16,33 @@ const ROOT = path.join(__dirname, "..");
 const SERVER = path.join(ROOT, "server.js");
 
 function loadRawConfig() {
-  for (const name of ["config.json", "config.example.json"]) {
-    try {
-      return JSON.parse(fs.readFileSync(path.join(ROOT, name), "utf8"));
-    } catch {}
+  let base = {};
+  try {
+    base = JSON.parse(fs.readFileSync(path.join(ROOT, "config.example.json"), "utf8"));
+  } catch {}
+  let user = {};
+  try {
+    user = JSON.parse(fs.readFileSync(path.join(ROOT, "config.json"), "utf8"));
+  } catch {}
+  const relays = { ...(base.relays || {}) };
+  for (const [id, relay] of Object.entries(user.relays || {})) {
+    relays[id] = { ...(relays[id] || {}), ...relay };
   }
-  return null;
+  // Backfill tokenSync for relays added before this section existed.
+  for (const relay of Object.values(relays)) {
+    if (!relay.tokenSync && relay.baseURL) {
+      let host = "localhost";
+      try { host = new URL(relay.baseURL).hostname.replace(/^www\./, ""); } catch {}
+      relay.tokenSync = {
+        cdpUrl: "http://127.0.0.1:9222",
+        sitePattern: host,
+        storageKeys: { auth_token: 100, access_token: 90 },
+        cookieNames: ["token", "access_token", "session_token"],
+        excludePattern: "(refresh|expires|user)",
+      };
+    }
+  }
+  return { port: user.port || base.port, relays };
 }
 
 function fail(message) {
