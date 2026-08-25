@@ -244,6 +244,21 @@
       </div>
     </div>
 
+    <div class="modal-overlay" id="keyModal" hidden>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="keyModalTitle">
+        <h3 id="keyModalTitle">API Key</h3>
+        <p class="modal-hint">粘贴该中转站控制台创建的模型调用密钥（sk-…）。之后部署新 provider 时会自动内嵌，无需再手动填。</p>
+        <label class="field">
+          <span id="keyModalRelay">Relay</span>
+          <input id="keyInput" placeholder="sk-…" autocomplete="off" />
+        </label>
+        <div class="modal-actions">
+          <button class="button button--secondary" id="keyCancelButton" type="button">Cancel</button>
+          <button class="button button--primary" id="keySaveButton" type="button">Save key</button>
+        </div>
+      </div>
+    </div>
+
     <div class="toast-region" aria-live="polite" aria-atomic="true">
       <div class="toast" id="toast" role="status" hidden>
         <span class="toast__icon" id="toastIcon" aria-hidden="true"></span>

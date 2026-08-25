@@ -543,6 +543,8 @@ async function buildMergedView() {
         baseURL: r.baseURL,
         type: r.type || "geiliapi",
         tokenConfigured: Boolean(resolveRelayToken(r)),
+        apiKeyConfigured: Boolean(r.apiKey),
+        apiKeyLast4: r.apiKey ? String(r.apiKey).slice(-4) : "",
         modelCount: priceCaches.get(id)?.table ? Object.keys(priceCaches.get(id).table).length : 0,
       },
     ])),
@@ -728,6 +730,24 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && p === "/api/relay-key") {
+    try {
+      const body = await readBody(req);
+      const relay = CONFIG.relays[body.id];
+      if (!relay) throw new Error("unknown relay");
+      relay.apiKey = String(body.key || "").trim();
+      const file = readUserConfigFile();
+      file.relays = file.relays || {};
+      file.relays[body.id] = file.relays[body.id] || {};
+      file.relays[body.id].apiKey = relay.apiKey;
+      writeUserConfigFile(file);
+      sendJson(res, 200, { ok: true, configured: Boolean(relay.apiKey) });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
   if (req.method === "POST" && p === "/api/deploy") {
     try {
       const body = await readBody(req);
@@ -738,7 +758,7 @@ const server = http.createServer(async (req, res) => {
         modelName: body.name,
         context: body.context,
         output: body.output,
-        apiKey: body.apiKey,
+        apiKey: body.apiKey || relay.apiKey || undefined,
         providerTemplate: relay.providerTemplate,
         providerName: body.providerName,
       });

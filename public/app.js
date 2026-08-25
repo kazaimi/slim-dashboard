@@ -39,6 +39,11 @@ const elements = {
   relaySaveButton: document.querySelector("#relaySaveButton"),
   noticesList: document.querySelector("#noticesList"),
   catalogToggleButton: document.querySelector("#catalogToggleButton"),
+  keyModal: document.querySelector("#keyModal"),
+  keyModalRelay: document.querySelector("#keyModalRelay"),
+  keyInput: document.querySelector("#keyInput"),
+  keyCancelButton: document.querySelector("#keyCancelButton"),
+  keySaveButton: document.querySelector("#keySaveButton"),
   toast: document.querySelector("#toast"),
   toastIcon: document.querySelector("#toastIcon"),
   toastTitle: document.querySelector("#toastTitle"),
@@ -949,6 +954,15 @@ function renderRelayBar(state) {
       }
     });
 
+    const keyBtn = document.createElement("button");
+    keyBtn.type = "button";
+    keyBtn.className = `chip-btn chip-btn--key ${relay.apiKeyConfigured ? "chip-btn--set" : ""}`;
+    keyBtn.textContent = relay.apiKeyConfigured ? "Key ✓" : "Key";
+    keyBtn.title = relay.apiKeyConfigured
+      ? "API key saved — new deploys will embed it"
+      : "Paste this relay's model-call API key (sk-…)";
+    keyBtn.addEventListener("click", () => openKeyModal(id, relay));
+
     const delBtn = document.createElement("button");
     delBtn.type = "button";
     delBtn.className = "chip-btn chip-btn--danger";
@@ -960,7 +974,7 @@ function renderRelayBar(state) {
       loadState();
     });
 
-    chip.append(dot, name, meta, testBtn, delBtn);
+    chip.append(dot, name, meta, keyBtn, testBtn, delBtn);
     bar.append(chip);
   }
 }
@@ -1219,6 +1233,48 @@ elements.tableBody.addEventListener("dragend", () => {
   }
   clearDragClasses();
   draggedRow = null;
+});
+
+function openKeyModal(relayId, relay) {
+  elements.keyModal.dataset.relay = relayId;
+  elements.keyModalRelay.textContent = relay.name || relayId;
+  const masked = relay.apiKeyConfigured ? `已配置（尾号 ${relay.apiKeyLast4 || "••••"}），粘贴新值可覆盖，留空清除` : "sk-…";
+  elements.keyInput.value = "";
+  elements.keyInput.placeholder = masked;
+  elements.keyModal.hidden = false;
+  elements.keyInput.focus();
+}
+
+function closeKeyModal() {
+  elements.keyModal.hidden = true;
+}
+
+async function submitKey() {
+  const relayId = elements.keyModal.dataset.relay;
+  const key = elements.keyInput.value.trim();
+  elements.keySaveButton.disabled = true;
+  try {
+    const response = await fetch("/api/relay-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: relayId, key }),
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || !result?.ok) throw new Error(result?.error || "save failed");
+    closeKeyModal();
+    showToast("success", key ? "API key saved" : "API key cleared", "之后的部署会自动使用该密钥。");
+    loadState();
+  } catch (error) {
+    showToast("error", "Could not save key", error.message);
+  } finally {
+    elements.keySaveButton.disabled = false;
+  }
+}
+
+elements.keyCancelButton.addEventListener("click", closeKeyModal);
+elements.keySaveButton.addEventListener("click", submitKey);
+elements.keyModal.addEventListener("click", (e) => {
+  if (e.target === elements.keyModal) closeKeyModal();
 });
 
 elements.addRelayButton.addEventListener("click", openRelayModal);

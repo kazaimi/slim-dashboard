@@ -906,6 +906,11 @@ tbody .stability-column {
   color: var(--danger);
 }
 
+.chip-btn--key.chip-btn--set {
+  color: var(--accent);
+  border-color: rgba(81, 230, 168, 0.4);
+}
+
 .modal-overlay {
   position: fixed;
   z-index: 50;
