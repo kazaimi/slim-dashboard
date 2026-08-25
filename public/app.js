@@ -973,8 +973,13 @@ elements.chromeButton.addEventListener("click", async () => {
   try {
     const response = await fetch("/api/open-debug-chrome", { method: "POST" });
     const result = await response.json().catch(() => null);
-    if (!response.ok || !result?.ok) throw new Error(result?.error || "failed to launch Chrome");
-    showToast("success", "Debug Chrome launched", "Log in to the relay page if needed, then click Sync token.");
+    if (!response.ok || !result?.ok) throw new Error(result?.errors?.join(" | ") || "failed to launch Chrome");
+    const tabs = (result.opened || []).map((o) => o.name).join(", ");
+    showToast(
+      "success",
+      `Debug Chrome opened ${result.opened.length} tab(s)`,
+      `Log in where needed: ${tabs}. Then click Sync token.`
+    );
   } catch (error) {
     showToast("error", "Could not open Chrome", error.message);
   } finally {

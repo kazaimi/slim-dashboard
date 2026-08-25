@@ -621,7 +621,9 @@ function launchDebugChrome(relay) {
 
   let port = 9222;
   try { port = new URL(sync.cdpUrl || "http://127.0.0.1:9222").port || 9222; } catch {}
-  const startUrl = sync.startUrl || `${relay.baseURL}${sync.authPageHint || ""}`;
+  // /monitor is a GeiliAPI-specific page; other relays open their bare base URL.
+  const hint = relay.type === "geiliapi" ? sync.authPageHint || "" : "";
+  const startUrl = sync.startUrl || `${relay.baseURL}${hint}`;
   const child = spawn(chromePath, [
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${debugProfile}`,
@@ -630,7 +632,21 @@ function launchDebugChrome(relay) {
     startUrl,
   ], { detached: true, stdio: "ignore", windowsHide: false });
   child.unref();
-  return { ok: true, message: `Debug Chrome launched on port ${port}; open ${startUrl}` };
+  return { ok: true, url: startUrl, port, message: `Debug Chrome launched on port ${port}; open ${startUrl}` };
+}
+
+function launchDebugChromeForRelays(relayId) {
+  const targets = relayId && CONFIG.relays[relayId]
+    ? [[relayId, CONFIG.relays[relayId]]]
+    : Object.entries(CONFIG.relays);
+  const opened = [];
+  const errors = [];
+  for (const [id, relay] of targets) {
+    const r = launchDebugChrome(relay);
+    if (r.ok) opened.push({ id, name: relay.name, url: r.url });
+    else errors.push(`${relay.name}: ${r.error}`);
+  }
+  return { ok: opened.length > 0, opened, errors };
 }
 
 // ---------------------------------------------------------------------------
@@ -714,8 +730,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && p === "/api/open-debug-chrome") {
     try {
       const body = await readBody(req);
-      const relay = CONFIG.relays[body.relay] || Object.values(CONFIG.relays)[0];
-      sendJson(res, 200, launchDebugChrome(relay));
+      sendJson(res, 200, launchDebugChromeForRelays(body.relay || null));
     } catch (e) {
       sendJson(res, 500, { ok: false, error: e.message });
     }
