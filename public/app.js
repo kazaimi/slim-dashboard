@@ -716,7 +716,17 @@ function createCatalogRow(state, modelId, relayId, table) {
     groupSelect.append(option);
   }
   const storedGroup = getSelectedGroup(CATALOG_KEY_PREFIX, modelId, null);
-  if (storedGroup && groups[storedGroup]) groupSelect.value = storedGroup;
+  if (storedGroup && groups[storedGroup]) {
+    groupSelect.value = storedGroup;
+  } else {
+    // Default to the cheapest group so the price shown is the best available.
+    let best = null, bestCost = Infinity;
+    for (const [gid, e] of Object.entries(groups)) {
+      const c = Number(e?.in);
+      if (Number.isFinite(c) && c < bestCost) { bestCost = c; best = gid; }
+    }
+    if (best) groupSelect.value = best;
+  }
   groupSelect.addEventListener("change", () => {
     setSelectedGroup(CATALOG_KEY_PREFIX, modelId, groupSelect.value);
     renderCatalog(dashboardState);

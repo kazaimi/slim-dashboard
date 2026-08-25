@@ -223,7 +223,22 @@ async function fetchNewApiPrices(relay) {
     signal: AbortSignal.timeout(12000),
   });
   if (!res.ok) throw new Error(`http_${res.status}`);
-  return parseNewApiPricing(await res.json());
+  const prices = parseNewApiPricing(await res.json());
+
+  // Panels set their own quota->currency factor (often NOT the new-api
+  // default of $2/ratio-unit). When configured, rescale to match what the
+  // panel actually displays, e.g. newApiPriceUnitCny: 0.13333 for CNY panels.
+  const unit = Number(relay.newApiPriceUnitCny);
+  if (Number.isFinite(unit) && unit > 0) {
+    for (const groups of Object.values(prices)) {
+      for (const e of Object.values(groups)) {
+        if (e.in != null) e.in = fmtNum(Number(e.in) * unit / 2);
+        if (e.out != null) e.out = fmtNum(Number(e.out) * unit / 2);
+        e.currency = "CNY";
+      }
+    }
+  }
+  return prices;
 }
 
 async function loadPriceTable(relayId, relay) {
