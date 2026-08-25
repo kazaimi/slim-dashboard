@@ -228,12 +228,22 @@ async function fetchNewApiPrices(relay) {
   // Panels set their own quota->currency factor (often NOT the new-api
   // default of $2/ratio-unit). When configured, rescale to match what the
   // panel actually displays, e.g. newApiPriceUnitCny: 0.13333 for CNY panels.
+  // Entries with billing_expr (exprUnit) are raw coefficients priced at
+  // panel `price` (充值价格, default 0.2 CNY per coefficient unit).
   const unit = Number(relay.newApiPriceUnitCny);
-  if (Number.isFinite(unit) && unit > 0) {
-    for (const groups of Object.values(prices)) {
-      for (const e of Object.values(groups)) {
+  const exprUnit = Number.isFinite(Number(relay.newApiExprUnitCny)) ? Number(relay.newApiExprUnitCny) : 0.2;
+  const calibrated = Number.isFinite(unit) && unit > 0;
+  for (const groups of Object.values(prices)) {
+    for (const e of Object.values(groups)) {
+      if (e.exprUnit) {
+        if (e.in != null) e.in = fmtNum(Number(e.in) * exprUnit);
+        if (e.out != null) e.out = fmtNum(Number(e.out) * exprUnit);
+        if (e.cache != null) e.cache = fmtNum(Number(e.cache) * exprUnit);
+        e.currency = "CNY";
+      } else if (calibrated) {
         if (e.in != null) e.in = fmtNum(Number(e.in) * unit / 2);
         if (e.out != null) e.out = fmtNum(Number(e.out) * unit / 2);
+        if (e.cache != null) e.cache = fmtNum(Number(e.cache) * unit / 2);
         e.currency = "CNY";
       }
     }

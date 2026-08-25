@@ -84,7 +84,23 @@ function parseNewApiPricing(payload) {
       Array.isArray(m.enable_groups) && m.enable_groups.length ? m.enable_groups.map(String) : ["default"];
 
     let entry;
-    if (Number(m.quota_type) === 1 && m.model_price != null) {
+    const expr = m.billing_mode === "tiered_expr" ? String(m.billing_expr || "") : "";
+    if (expr) {
+      // Custom tiered billing: the expression's coefficients ARE the price
+      // (in panel price-unit per 1M tokens), model_ratio is ignored.
+      // Example: len <= 200000 ? tier("base", p * 3 + c * 18 + cr * 0.3 + cc * 3.75) : ...
+      const coeff = (re) => {
+        const match = expr.match(re);
+        return match ? Number(match[1]) : 0;
+      };
+      entry = {
+        in: coeff(/\bp\s*\*\s*([\d.]+)/),
+        out: coeff(/\bc\s*\*\s*([\d.]+)/),
+        cache: coeff(/\bcr\s*\*\s*([\d.]+)/),
+        exprUnit: true,
+        tiered: /tier\s*\(/i.test(expr),
+      };
+    } else if (Number(m.quota_type) === 1 && m.model_price != null) {
       // per-call billing: model_price is dollars per request
       entry = { in: fmtNum(Number(m.model_price)), out: fmtNum(Number(m.model_price)), perCall: true };
     } else if (m.model_ratio != null) {
@@ -107,6 +123,7 @@ function parseNewApiPricing(payload) {
       if (gr !== 1 && e.in != null && !e.perCall) {
         e.in = fmtNum(parseFloat(e.in) * gr);
         e.out = fmtNum(parseFloat(e.out) * gr);
+        if (e.cache != null) e.cache = fmtNum(parseFloat(e.cache) * gr);
       }
       prices[m.model_name] = prices[m.model_name] || {};
       prices[m.model_name][g] = e;

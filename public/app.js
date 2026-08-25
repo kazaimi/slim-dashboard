@@ -171,7 +171,7 @@ function computeAgentValue(modelReference) {
     const groupId = getSelectedGroup(provider, modelId, mapping);
     const p = dashboardState?.price?.prices?.[modelId]?.[groupId];
     if (p && p.in != null) {
-      price = { in: p.in, out: p.out, cache: p.cache, mult: p.mult, officialIn: p.officialIn, officialOut: p.officialOut, currency: p.currency || "USD" };
+      price = { in: p.in, out: p.out, cache: p.cache, mult: p.mult, officialIn: p.officialIn, officialOut: p.officialOut, currency: p.currency || "USD", tiered: p.tiered };
       groupName = `${mapping.groupName} / group ${groupId}`;
     }
   }
@@ -188,7 +188,8 @@ function formatPrice(price) {
 function priceTitle(price, groupName) {
   if (!price) return "No price available";
   const cur = price.currency === "CNY" ? "\u00a5" : "$";
-  return `Multiplier \u00d7${price.mult} \u2014 In ${cur}${price.in} / Out ${cur}${price.out} / Cache ${cur}${price.cache !== null ? price.cache : "\u2013"} per 1M tokens (group ${groupName || ""}, ${price.currency || "USD"})`;
+  const tierNote = price.tiered ? " | 分档计费，此处为基础档（超出长度阈值后单价上浮）" : "";
+  return `Multiplier \u00d7${price.mult ?? "\u2013"} \u2014 In ${cur}${price.in} / Out ${cur}${price.out} / Cache ${cur}${price.cache !== null && price.cache !== undefined ? price.cache : "\u2013"} per 1M tokens (group ${groupName || ""}, ${price.currency || "USD"})${tierNote}`;
 }
 
 function priceTier(price) {
