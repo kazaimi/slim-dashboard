@@ -657,8 +657,29 @@ function compareModelsNewestFirst(a, b) {
   return a.localeCompare(b);
 }
 
-function suggestProviderId(state, relayId, modelId) {
-  const prefix = String(relayId).replace(/-/g, "_");
+function hostOf(url) {
+  try { return new URL(url).hostname; } catch { return ""; }
+}
+
+// Derive a provider-name prefix for a relay. Priority:
+// 1. explicit relay.providerPrefix from config
+// 2. an existing opencode provider pointing at the same API host (nan.meta-api.vip -> "nan")
+// 3. an already-mapped provider of this relay
+// 4. first label of the domain, then the relay id
+function relayPrefix(state, relayId, relay) {
+  if (relay?.providerPrefix) return String(relay.providerPrefix);
+  const host = hostOf(relay?.baseURL);
+  const sameHost = (state.providers || []).find((p) => hostOf(p.baseURL) === host && p.id.includes("_"));
+  if (sameHost) return sameHost.id.split("_")[0];
+  const mapped = Object.entries(state.providerMap || {}).find(
+    ([pid, m]) => (m.relay || "geiliapi") === relayId && pid.includes("_")
+  );
+  if (mapped) return mapped[0].split("_")[0];
+  const dom = host ? host.split(".")[0] : "";
+  return dom || relayId || "relay";
+}
+
+function suggestProviderId(state, prefix, modelId) {
   const taken = new Set((state.providers || []).map((p) => p.id));
   let id = `${prefix}_${familyOf(modelId)}`;
   let n = 2;
@@ -666,25 +687,43 @@ function suggestProviderId(state, relayId, modelId) {
   return id;
 }
 
-function buildTargetSelect(state, relayId, modelId) {
+function buildTargetSelect(state, relayId, modelId, relay) {
   const select = document.createElement("select");
   select.className = "group-select target-select";
-  const mapped = Object.entries(state.providerMap || {}).filter(
-    ([pid, m]) => m.priceGroup && (m.relay || "geiliapi") === relayId
-  );
-  for (const [pid] of mapped) {
+  const prefix = relayPrefix(state, relayId, relay);
+  const seen = new Set();
+
+  // 1) providers already mapped to this relay
+  for (const [pid, m] of Object.entries(state.providerMap || {})) {
+    if (!m.priceGroup || (m.relay || "geiliapi") !== relayId) continue;
+    seen.add(pid);
     const option = document.createElement("option");
     option.value = pid;
     option.textContent = pid;
     select.append(option);
   }
-  const suggestion = suggestProviderId(state, relayId, modelId);
+
+  // 2) existing providers on the same API host (e.g. nan_openai) — deploying
+  //    into them just adds the model alongside their current ones.
+  const host = hostOf(relay?.baseURL);
+  if (host) {
+    for (const p of state.providers || []) {
+      if (seen.has(p.id) || hostOf(p.baseURL) !== host) continue;
+      seen.add(p.id);
+      const option = document.createElement("option");
+      option.value = p.id;
+      option.textContent = `${p.id} (已有)`;
+      select.append(option);
+    }
+  }
+
+  const suggestion = suggestProviderId(state, prefix, modelId);
   const newOption = document.createElement("option");
   newOption.value = "__new__";
   newOption.dataset.suggest = suggestion;
   newOption.textContent = `+ ${suggestion}`;
   select.append(newOption);
-  if (!mapped.length) select.value = "__new__";
+  if (!seen.size) select.value = "__new__";
   return select;
 }
 
@@ -756,7 +795,7 @@ function createCatalogRow(state, modelId, relayId, table) {
   else priceCell.textContent = formatPrice(groups[groupSelect.value]);
 
   const targetCell = document.createElement("td");
-  const targetSelect = buildTargetSelect(state, relayId, modelId);
+  const targetSelect = buildTargetSelect(state, relayId, modelId, ownerRelay);
   targetCell.append(targetSelect);
 
   const actionCell = document.createElement("td");

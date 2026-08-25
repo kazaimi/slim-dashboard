@@ -19,6 +19,8 @@
     "  syntheticGroups virtual groups computed from an existing base group:",
     "                  actual = officialPrice x multiplier (own id, e.g. \"heavy\").",
     "  tokenSync       browser token harvesting via Chrome CDP (--remote-debugging-port)",
+    "  providerPrefix  prefix for auto-suggested provider names on deploy (e.g. \"geili\" ->",
+    "                  geili_openai). Auto-learned from same-host providers when omitted.",
     "  providerTemplate used when one-click deploy creates a brand-new provider"
   ],
   "port": 6388,
@@ -90,6 +92,7 @@
         "cookieNames": ["token", "access_token", "session_token"],
         "excludePattern": "(refresh|expires|user)"
       },
+      "providerPrefix": "geili",
       "providerTemplate": {
         "npm": "@ai-sdk/openai",
         "baseURL": "https://sub.geiliapi.com/v1",
