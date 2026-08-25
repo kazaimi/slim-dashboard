@@ -118,6 +118,18 @@ const CONFIG = loadConfig();
 const PUBLIC_DIR = path.join(ROOT, "public");
 const noticeStore = new NoticeStore(path.join(CONFIG.dataDir, "notices-cache.json"));
 
+// Keep a trace when the process dies unexpectedly instead of vanishing silently.
+process.on("uncaughtException", (e) => {
+  try {
+    fs.appendFileSync(path.join(CONFIG.dataDir, "server-error.log"), new Date().toISOString() + " " + (e.stack || e.message) + "\n");
+  } catch {}
+});
+process.on("unhandledRejection", (e) => {
+  try {
+    fs.appendFileSync(path.join(CONFIG.dataDir, "server-error.log"), new Date().toISOString() + " [rejection] " + (e && (e.stack || e.message)) + "\n");
+  } catch {}
+});
+
 // Relay panels change ratios/groups server-side without notice; drop cached
 // price tables periodically so the dashboard self-corrects within minutes.
 const PRICE_REFRESH_MS = 10 * 60 * 1000;
