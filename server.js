@@ -14,6 +14,7 @@ const { spawn } = require("node:child_process");
 const { deployModel } = require("./scripts/deploy-opencode");
 const { syncTokens } = require("./scripts/sync-token");
 const { discoverRelay, verifyRelay, parseGeiliBundle, parseNewApiPricing, resolveEnvChain } = require("./scripts/discover-relay");
+const { NoticeStore } = require("./scripts/notices");
 
 const ROOT = __dirname;
 const HOMEDIR = process.env.USERPROFILE || process.env.HOME || os.homedir();
@@ -115,6 +116,12 @@ function loadConfig() {
 
 const CONFIG = loadConfig();
 const PUBLIC_DIR = path.join(ROOT, "public");
+const noticeStore = new NoticeStore(path.join(CONFIG.dataDir, "notices-cache.json"));
+
+// Relay panels change ratios/groups server-side without notice; drop cached
+// price tables periodically so the dashboard self-corrects within minutes.
+const PRICE_REFRESH_MS = 10 * 60 * 1000;
+setInterval(() => priceCaches.clear(), PRICE_REFRESH_MS).unref?.();
 
 // ---------------------------------------------------------------------------
 // Generic helpers
@@ -489,6 +496,11 @@ async function buildMergedView() {
     stability.note = stabilityNotes.join("; ");
   }
 
+  const noticeEntries = await Promise.all(
+    Object.entries(CONFIG.relays).map(async ([relayId, relay]) => [relayId, await noticeStore.get(relayId, relay)])
+  );
+  const notices = Object.fromEntries(noticeEntries);
+
   return {
     ...state,
     agents,
@@ -498,6 +510,7 @@ async function buildMergedView() {
     priceGroupNames,
     modelRelays,
     relayPrices: relayPriceTables,
+    notices,
     relays: Object.fromEntries(Object.entries(CONFIG.relays).map(([id, r]) => [
       id,
       {

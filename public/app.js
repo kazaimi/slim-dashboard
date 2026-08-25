@@ -37,6 +37,7 @@ const elements = {
   relayTokenEnvInput: document.querySelector("#relayTokenEnvInput"),
   relayCancelButton: document.querySelector("#relayCancelButton"),
   relaySaveButton: document.querySelector("#relaySaveButton"),
+  noticesList: document.querySelector("#noticesList"),
   toast: document.querySelector("#toast"),
   toastIcon: document.querySelector("#toastIcon"),
   toastTitle: document.querySelector("#toastTitle"),
@@ -504,6 +505,73 @@ function renderGeiliModels(state) {
   elements.geiliModelCount.textContent = String(rows.length);
   renderCatalog(state);
   renderRelayBar(state);
+  renderNotices(state);
+}
+
+const NOTICE_HOT_RE = /(倍率|价格|价格表|分组|渠道|折扣|调整|涨价|降价|上线|下线|失效|公告|ratio|price|group)/i;
+
+function escapeHtml(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderNoticeText(text) {
+  return escapeHtml(text)
+    .split("\n")
+    .map((line) => (NOTICE_HOT_RE.test(line) ? `<div class="notice-line notice-hot">${line}</div>` : `<div class="notice-line">${line}</div>`))
+    .join("");
+}
+
+function renderNotices(state) {
+  const list = elements.noticesList;
+  list.replaceChildren();
+  const entries = Object.entries(state.notices || {}).filter(([, n]) => n.ok && n.text);
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "notice-empty";
+    empty.textContent = "No announcements available from your relays.";
+    list.append(empty);
+    return;
+  }
+  for (const [relayId, notice] of entries) {
+    const relay = state.relays?.[relayId];
+    const card = document.createElement("div");
+    card.className = "notice-card";
+
+    const head = document.createElement("div");
+    head.className = "notice-head";
+    const name = document.createElement("b");
+    name.textContent = relay?.name || relayId;
+    const meta = document.createElement("small");
+    meta.textContent = `${notice.updatedAt ? new Date(notice.updatedAt).toLocaleString() : ""}${notice.stale ? " · cached" : ""}`;
+    head.append(name, meta);
+
+    if (notice.justChanged || (notice.changedAt && Date.now() - new Date(notice.changedAt).getTime() < 30 * 60 * 1000)) {
+      const badge = document.createElement("span");
+      badge.className = "notice-new";
+      badge.textContent = "UPDATED";
+      badge.title = notice.changedAt ? `Changed at ${new Date(notice.changedAt).toLocaleString()}` : "";
+      head.append(badge);
+    }
+    if (notice.stale) {
+      const staleBadge = document.createElement("span");
+      staleBadge.className = "notice-stale";
+      staleBadge.textContent = "STALE";
+      head.append(staleBadge);
+    }
+
+    const details = document.createElement("details");
+    details.className = "notice-details";
+    const summary = document.createElement("summary");
+    const firstHot = (notice.text || "").split("\n").find((l) => NOTICE_HOT_RE.test(l));
+    summary.textContent = firstHot ? firstHot.slice(0, 120) : "View announcement";
+    const body = document.createElement("div");
+    body.className = "notice-body";
+    body.innerHTML = renderNoticeText(notice.text || "");
+    details.append(summary, body);
+
+    card.append(head, details);
+    list.append(card);
+  }
 }
 
 const CATALOG_KEY_PREFIX = "__catalog__";

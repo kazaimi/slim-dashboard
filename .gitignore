@@ -2,6 +2,7 @@
 config.json
 price-fallback*.json
 stability-cache*.json
+notices-cache.json
 opencode.jsonc.bak
 
 # dependencies
