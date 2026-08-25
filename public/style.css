@@ -725,6 +725,36 @@ tbody .stability-column {
   color: var(--text-dim);
 }
 
+.catalog-toggle-row {
+  cursor: pointer;
+  user-select: none;
+}
+
+.catalog-toggle-row:hover b,
+.catalog-toggle-row:hover {
+  color: var(--text);
+}
+
+.chevron {
+  display: inline-block;
+  width: 14px;
+  margin-right: 6px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.heading-side {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.heading-side .button {
+  min-height: 30px;
+  padding: 0 11px;
+  font-size: 11px;
+}
+
 .notice-list {
   display: flex;
   flex-direction: column;

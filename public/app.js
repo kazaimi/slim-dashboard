@@ -38,6 +38,7 @@ const elements = {
   relayCancelButton: document.querySelector("#relayCancelButton"),
   relaySaveButton: document.querySelector("#relaySaveButton"),
   noticesList: document.querySelector("#noticesList"),
+  catalogToggleButton: document.querySelector("#catalogToggleButton"),
   toast: document.querySelector("#toast"),
   toastIcon: document.querySelector("#toastIcon"),
   toastTitle: document.querySelector("#toastTitle"),
@@ -576,6 +577,20 @@ function renderNotices(state) {
 }
 
 const CATALOG_KEY_PREFIX = "__catalog__";
+const CATALOG_COLLAPSE_KEY = "slim-dashboard.catalog-collapsed.v1";
+
+function getCollapsedCatalog() {
+  try {
+    const v = JSON.parse(localStorage.getItem(CATALOG_COLLAPSE_KEY));
+    return v && typeof v === "object" && v.relays && v.vendors ? v : { relays: {}, vendors: {} };
+  } catch {
+    return { relays: {}, vendors: {} };
+  }
+}
+
+function setCollapsedCatalog(next) {
+  localStorage.setItem(CATALOG_COLLAPSE_KEY, JSON.stringify(next));
+}
 
 function catalogGroups(state) {
   return Object.keys(state?.price?.prices || {});
@@ -783,6 +798,7 @@ function renderCatalog(state) {
 
   const rows = [];
   let undeployedTotal = 0;
+  const collapsed = getCollapsedCatalog();
   for (const [relayId, relay] of Object.entries(state.relays || {})) {
     const table = state.relayPrices?.[relayId] || {};
     const deployedHere = deployedByRelay.get(relayId) || new Set();
@@ -790,13 +806,23 @@ function renderCatalog(state) {
     if (!models.length) continue;
     undeployedTotal += models.length;
 
+    const relayCollapsed = Boolean(collapsed.relays[relayId]);
     const header = document.createElement("tr");
-    header.className = "catalog-section-row";
+    header.className = "catalog-section-row catalog-toggle-row";
     const cell = document.createElement("td");
     cell.colSpan = 5;
-    cell.innerHTML = `<b>${relay.name}</b><small>${models.length} deployable</small>`;
+    cell.innerHTML = `<span class="chevron">${relayCollapsed ? "▸" : "▾"}</span><b>${relay.name}</b><small>${models.length} deployable</small>`;
+    header.title = relayCollapsed ? "展开" : "折叠";
+    header.addEventListener("click", () => {
+      const c = getCollapsedCatalog();
+      if (c.relays[relayId]) delete c.relays[relayId];
+      else c.relays[relayId] = true;
+      setCollapsedCatalog(c);
+      renderCatalog(dashboardState);
+    });
     header.append(cell);
     rows.push(header);
+    if (relayCollapsed) continue;
 
     // Vendor sub-groups, newest releases first within each vendor.
     const byVendor = new Map();
@@ -805,15 +831,26 @@ function renderCatalog(state) {
       if (!byVendor.has(v.id)) byVendor.set(v.id, { label: v.label, models: [] });
       byVendor.get(v.id).models.push(modelId);
     }
-    for (const { label, models: vendorModels } of byVendor.values()) {
+    for (const [vendorId, { label, models: vendorModels }] of byVendor) {
       vendorModels.sort(compareModelsNewestFirst);
+      const vendorKey = `${relayId}|${vendorId}`;
+      const vendorCollapsed = Boolean(collapsed.vendors[vendorKey]);
       const vRow = document.createElement("tr");
-      vRow.className = "catalog-vendor-row";
+      vRow.className = "catalog-vendor-row catalog-toggle-row";
       const vCell = document.createElement("td");
       vCell.colSpan = 5;
-      vCell.innerHTML = `${label}<small>${vendorModels.length}</small>`;
+      vCell.innerHTML = `<span class="chevron">${vendorCollapsed ? "▸" : "▾"}</span>${label}<small>${vendorModels.length}</small>`;
+      vRow.title = vendorCollapsed ? "展开" : "折叠";
+      vRow.addEventListener("click", () => {
+        const c = getCollapsedCatalog();
+        if (c.vendors[vendorKey]) delete c.vendors[vendorKey];
+        else c.vendors[vendorKey] = true;
+        setCollapsedCatalog(c);
+        renderCatalog(dashboardState);
+      });
       vRow.append(vCell);
       rows.push(vRow);
+      if (vendorCollapsed) continue;
       for (const modelId of vendorModels) rows.push(createCatalogRow(state, modelId, relayId, table));
     }
   }
@@ -1153,6 +1190,32 @@ elements.relayModal.addEventListener("click", (e) => {
 });
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !elements.relayModal.hidden) closeRelayModal();
+});
+
+elements.catalogToggleButton.addEventListener("click", () => {
+  const state = dashboardState;
+  if (!state) return;
+  const collapsed = getCollapsedCatalog();
+  const relayIds = Object.keys(state.relays || {});
+  const allCollapsed = relayIds.every((rid) => collapsed.relays[rid]);
+  const next = { relays: {}, vendors: {} };
+  if (!allCollapsed) {
+    for (const rid of relayIds) {
+      next.relays[rid] = true;
+      const table = state.relayPrices?.[rid] || {};
+      const deployedHere = new Set(
+        (state.providers || [])
+          .filter((p) => (state.providerMap?.[p.id]?.relay || "geiliapi") === rid)
+          .flatMap((p) => (p.models || []).map((m) => m.id))
+      );
+      for (const modelId of Object.keys(table)) {
+        if (!deployedHere.has(modelId)) next.vendors[`${rid}|${vendorOf(modelId).id}`] = true;
+      }
+    }
+  }
+  setCollapsedCatalog(next);
+  elements.catalogToggleButton.textContent = allCollapsed ? "折叠全部" : "展开全部";
+  renderCatalog(state);
 });
 
 elements.refreshButton.addEventListener("click", () => loadState({ confirmDiscard: true }));
