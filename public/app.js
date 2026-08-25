@@ -745,10 +745,21 @@ async function submitRelay() {
     if (!response.ok || !result?.ok) throw new Error(result?.error || "relay rejected");
     closeRelayModal();
     showToast(
-      result.detectedType === "openai" ? "success" : "success",
+      "success",
       `Relay added (${result.detectedType})`,
       `${result.modelCount} models discovered${result.detail ? ` via ${result.detail}` : ""}.`
     );
+    // Guide the token flow: open this relay's page in debug Chrome right away,
+    // unless the user already supplied a token during add.
+    if (!payload.token) {
+      try {
+        await fetch("/api/open-debug-chrome", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ relay: result.id }),
+        });
+      } catch {}
+    }
     setTimeout(() => loadState(), 800);
   } catch (error) {
     showToast("error", "Could not add relay", error.message);
