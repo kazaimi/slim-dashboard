@@ -575,11 +575,11 @@ async function deployCatalogModel(state, modelId, groupId, targetProvider, relay
   }
 }
 
-function createCatalogRow(state, modelId, relayId) {
+function createCatalogRow(state, modelId, relayId, table) {
   const row = document.createElement("tr");
   row.className = "catalog-row";
 
-  const groups = state.price.prices[modelId] || {};
+  const groups = table[modelId] || {};
 
   const modelCell = document.createElement("td");
   modelCell.className = "agent-name";
@@ -642,38 +642,38 @@ function createCatalogRow(state, modelId, relayId) {
 }
 
 function renderCatalog(state) {
-  const deployedModels = new Set(
-    (state.providers || []).flatMap((provider) => (provider.models || []).map((model) => model.id))
-  );
-  const undeployed = catalogGroups(state).filter((modelId) => !deployedModels.has(modelId));
-
-  // Bucket undeployed models by owning relay, keeping relay config order.
-  const buckets = new Map();
-  for (const modelId of undeployed) {
-    const rid = state.modelRelays?.[modelId] || "__other__";
-    if (!buckets.has(rid)) buckets.set(rid, []);
-    buckets.get(rid).push(modelId);
+  // Per-relay deployed sets: the same model can exist on several relays and
+  // be deployed independently under each one's provider.
+  const relayOfProvider = (pid) => state.providerMap?.[pid]?.relay || "geiliapi";
+  const deployedByRelay = new Map();
+  for (const provider of state.providers || []) {
+    const rid = relayOfProvider(provider.id);
+    if (!deployedByRelay.has(rid)) deployedByRelay.set(rid, new Set());
+    for (const model of provider.models || []) deployedByRelay.get(rid).add(model.id);
   }
 
   const rows = [];
-  const sectionOrder = [...Object.keys(state.relays || {}), "__other__"];
-  for (const relayId of sectionOrder) {
-    const models = buckets.get(relayId);
-    if (!models?.length) continue;
-    const relay = state.relays?.[relayId];
+  let undeployedTotal = 0;
+  for (const [relayId, relay] of Object.entries(state.relays || {})) {
+    const table = state.relayPrices?.[relayId] || {};
+    const deployedHere = deployedByRelay.get(relayId) || new Set();
+    const models = Object.keys(table).filter((modelId) => !deployedHere.has(modelId));
+    if (!models.length) continue;
+    undeployedTotal += models.length;
+
     const header = document.createElement("tr");
     header.className = "catalog-section-row";
     const cell = document.createElement("td");
     cell.colSpan = 5;
-    cell.innerHTML = `<b>${relay ? relay.name : "Other relays"}</b><small>${models.length} deployable</small>`;
+    cell.innerHTML = `<b>${relay.name}</b><small>${models.length} deployable</small>`;
     header.append(cell);
     rows.push(header);
-    for (const modelId of models) rows.push(createCatalogRow(state, modelId, relayId));
+    for (const modelId of models) rows.push(createCatalogRow(state, modelId, relayId, table));
   }
 
   elements.catalogBody.replaceChildren(...rows);
   elements.catalogFrame.setAttribute("aria-busy", "false");
-  elements.catalogCount.textContent = String(undeployed.length);
+  elements.catalogCount.textContent = String(undeployedTotal);
   elements.catalogEmptyState.hidden = rows.length > 0;
   elements.catalogBody.closest("table").hidden = rows.length === 0;
 }

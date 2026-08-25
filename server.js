@@ -449,6 +449,7 @@ async function buildMergedView() {
   const priceSources = [];
   const stabilityNotes = [];
   const modelRelays = {};
+  const relayPriceTables = {};
   let stabilityFromCache = false;
 
   for (const [relayId, relay] of Object.entries(CONFIG.relays)) {
@@ -458,6 +459,7 @@ async function buildMergedView() {
       stabilityFromCache = true;
       stabilityNotes.push(`${relay.name}: ${stability.note}`);
     }
+    relayPriceTables[relayId] = price.prices;
     for (const [modelId, groups] of Object.entries(price.prices || {})) {
       if (!modelRelays[modelId]) modelRelays[modelId] = relayId;
       mergedPrices[modelId] = { ...(mergedPrices[modelId] || {}), ...groups };
@@ -495,6 +497,7 @@ async function buildMergedView() {
     providerMap,
     priceGroupNames,
     modelRelays,
+    relayPrices: relayPriceTables,
     relays: Object.fromEntries(Object.entries(CONFIG.relays).map(([id, r]) => [
       id,
       {
