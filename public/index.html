@@ -246,15 +246,20 @@
 
     <div class="modal-overlay" id="keyModal" hidden>
       <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="keyModalTitle">
-        <h3 id="keyModalTitle">API Key</h3>
-        <p class="modal-hint">粘贴该中转站控制台创建的模型调用密钥（sk-…）。之后部署新 provider 时会自动内嵌，无需再手动填。</p>
+        <h3 id="keyModalTitle">API Keys</h3>
+        <p class="modal-hint">同一中转站可建多个 key，按标签对应不同模型族（openai / anthropic / gemini / deepseek / grok / cn / default）。部署时按模型家族自动匹配。</p>
         <label class="field">
           <span id="keyModalRelay">Relay</span>
-          <input id="keyInput" placeholder="sk-…" autocomplete="off" />
         </label>
+        <div id="keyList" class="key-list"></div>
+        <div class="key-add-row">
+          <input id="keyLabelInput" placeholder="标签 (openai / default …)" autocomplete="off" />
+          <input id="keyInput" placeholder="sk-…" autocomplete="off" />
+          <button class="button button--secondary" id="keyAddButton" type="button">添加</button>
+        </div>
         <div class="modal-actions">
           <button class="button button--secondary" id="keyCancelButton" type="button">Cancel</button>
-          <button class="button button--primary" id="keySaveButton" type="button">Save key</button>
+          <button class="button button--primary" id="keySaveButton" type="button">Save keys</button>
         </div>
       </div>
     </div>

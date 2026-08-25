@@ -41,7 +41,10 @@ const elements = {
   catalogToggleButton: document.querySelector("#catalogToggleButton"),
   keyModal: document.querySelector("#keyModal"),
   keyModalRelay: document.querySelector("#keyModalRelay"),
+  keyList: document.querySelector("#keyList"),
+  keyLabelInput: document.querySelector("#keyLabelInput"),
   keyInput: document.querySelector("#keyInput"),
+  keyAddButton: document.querySelector("#keyAddButton"),
   keyCancelButton: document.querySelector("#keyCancelButton"),
   keySaveButton: document.querySelector("#keySaveButton"),
   toast: document.querySelector("#toast"),
@@ -753,6 +756,18 @@ async function deployCatalogModel(state, modelId, groupId, targetProvider, relay
   }
 }
 
+function resolveKeyHint(state, relayId, modelId) {
+  const keys = state.relays?.[relayId]?.apiKeys || [];
+  if (!keys.length) return " | ⚠ 未配置 API key，部署后需手动填入";
+  const fam = familyOf(modelId);
+  const match =
+    keys.find((k) => k.label.toLowerCase() === fam) ||
+    keys.find((k) => k.label.toLowerCase().includes(fam) || fam.includes(k.label.toLowerCase())) ||
+    keys.find((k) => k.label.toLowerCase() === "default") ||
+    keys[0];
+  return ` | 将使用 key [${match.label}]`;
+}
+
 function createCatalogRow(state, modelId, relayId, table) {
   const row = document.createElement("tr");
   row.className = "catalog-row";
@@ -809,7 +824,7 @@ function createCatalogRow(state, modelId, relayId, table) {
   deployBtn.type = "button";
   deployBtn.className = "deploy-btn";
   deployBtn.textContent = "Deploy";
-  deployBtn.title = `Add ${modelId} to opencode.jsonc`;
+  deployBtn.title = `Add ${modelId} to opencode.jsonc` + resolveKeyHint(state, relayId, modelId);
   deployBtn.addEventListener("click", () => {
     const mapping = state.providerMap?.[targetSelect.value];
     const useRelay = relayId || mapping?.relay || Object.keys(state.relays || {})[0];
@@ -954,13 +969,14 @@ function renderRelayBar(state) {
       }
     });
 
+    const keyCount = (relay.apiKeys || []).length;
     const keyBtn = document.createElement("button");
     keyBtn.type = "button";
-    keyBtn.className = `chip-btn chip-btn--key ${relay.apiKeyConfigured ? "chip-btn--set" : ""}`;
-    keyBtn.textContent = relay.apiKeyConfigured ? "Key ✓" : "Key";
-    keyBtn.title = relay.apiKeyConfigured
-      ? "API key saved — new deploys will embed it"
-      : "Paste this relay's model-call API key (sk-…)";
+    keyBtn.className = `chip-btn chip-btn--key ${keyCount ? "chip-btn--set" : ""}`;
+    keyBtn.textContent = keyCount ? `Keys(${keyCount})` : "Keys";
+    keyBtn.title = keyCount
+      ? "已保存的 API keys — 点击管理（部署时按模型族自动匹配）"
+      : "粘贴该中转站的模型调用 API keys（可多个，按模型族区分）";
     keyBtn.addEventListener("click", () => openKeyModal(id, relay));
 
     const delBtn = document.createElement("button");
@@ -1235,44 +1251,101 @@ elements.tableBody.addEventListener("dragend", () => {
   draggedRow = null;
 });
 
-function openKeyModal(relayId, relay) {
+let keyDraft = [];
+let keyDraftRelayId = null;
+
+async function openKeyModal(relayId, relay) {
+  keyDraftRelayId = relayId;
   elements.keyModal.dataset.relay = relayId;
   elements.keyModalRelay.textContent = relay.name || relayId;
-  const masked = relay.apiKeyConfigured ? `已配置（尾号 ${relay.apiKeyLast4 || "••••"}），粘贴新值可覆盖，留空清除` : "sk-…";
+  elements.keyLabelInput.value = "";
   elements.keyInput.value = "";
-  elements.keyInput.placeholder = masked;
+  keyDraft = [];
+  elements.keyList.replaceChildren();
+  try {
+    const res = await fetch(`/api/relay-keys?id=${encodeURIComponent(relayId)}`);
+    const data = await res.json().catch(() => null);
+    if (data?.ok && Array.isArray(data.keys)) keyDraft = data.keys.map((k) => ({ ...k }));
+  } catch {}
+  renderKeyDraft();
   elements.keyModal.hidden = false;
-  elements.keyInput.focus();
+  elements.keyLabelInput.focus();
+}
+
+function renderKeyDraft() {
+  const list = elements.keyList;
+  list.replaceChildren();
+  if (!keyDraft.length) {
+    const empty = document.createElement("p");
+    empty.className = "key-empty";
+    empty.textContent = "尚未保存任何 key。";
+    list.append(empty);
+    return;
+  }
+  for (const k of keyDraft) {
+    const row = document.createElement("div");
+    row.className = "key-row";
+    const label = document.createElement("b");
+    label.textContent = k.label;
+    const masked = document.createElement("span");
+    masked.className = "key-masked";
+    masked.textContent = "••••" + (k.key ? k.key.slice(-4) : k.last4 || "");
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "chip-btn chip-btn--danger";
+    del.textContent = "删除";
+    del.addEventListener("click", () => {
+      keyDraft = keyDraft.filter((x) => x !== k);
+      renderKeyDraft();
+    });
+    row.append(label, masked, del);
+    list.append(row);
+  }
 }
 
 function closeKeyModal() {
   elements.keyModal.hidden = true;
 }
 
-async function submitKey() {
-  const relayId = elements.keyModal.dataset.relay;
-  const key = elements.keyInput.value.trim();
+async function submitKeys() {
+  const relayId = keyDraftRelayId;
   elements.keySaveButton.disabled = true;
   try {
-    const response = await fetch("/api/relay-key", {
+    const response = await fetch("/api/relay-keys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: relayId, key }),
+      body: JSON.stringify({ id: relayId, keys: keyDraft }),
     });
     const result = await response.json().catch(() => null);
     if (!response.ok || !result?.ok) throw new Error(result?.error || "save failed");
     closeKeyModal();
-    showToast("success", key ? "API key saved" : "API key cleared", "之后的部署会自动使用该密钥。");
+    showToast("success", `已保存 ${result.count} 个 key`, "部署时按模型家族自动匹配。");
     loadState();
   } catch (error) {
-    showToast("error", "Could not save key", error.message);
+    showToast("error", "Could not save keys", error.message);
   } finally {
     elements.keySaveButton.disabled = false;
   }
 }
 
+function addKeyToDraft() {
+  const label = elements.keyLabelInput.value.trim();
+  const key = elements.keyInput.value.trim();
+  if (!label || !key) {
+    showToast("error", "Missing fields", "标签和 key 都要填。");
+    return;
+  }
+  keyDraft = keyDraft.filter((k) => k.label.toLowerCase() !== label.toLowerCase());
+  keyDraft.push({ label, key });
+  elements.keyLabelInput.value = "";
+  elements.keyInput.value = "";
+  renderKeyDraft();
+}
+
+elements.keyAddButton.addEventListener("click", addKeyToDraft);
+elements.keyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addKeyToDraft(); });
 elements.keyCancelButton.addEventListener("click", closeKeyModal);
-elements.keySaveButton.addEventListener("click", submitKey);
+elements.keySaveButton.addEventListener("click", submitKeys);
 elements.keyModal.addEventListener("click", (e) => {
   if (e.target === elements.keyModal) closeKeyModal();
 });

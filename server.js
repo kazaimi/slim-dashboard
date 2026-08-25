@@ -95,7 +95,7 @@ function loadConfig() {
       if (id === "geiliapi") continue;
       relays[id] = { ...DEFAULT_RELAY, ...relay };
     }
-    for (const r of Object.values(relays)) delete r.port;
+    for (const r of Object.values(relays)) { delete r.port; normalizeRelayKeys(r); }
     return {
       port: user.port || process.env.PORT || 6388,
       opencodeConfigPath: user.opencodeConfigPath || path.join(HOMEDIR, ".config", "opencode", "opencode.jsonc"),
@@ -555,8 +555,8 @@ async function buildMergedView() {
         baseURL: r.baseURL,
         type: r.type || "geiliapi",
         tokenConfigured: Boolean(resolveRelayToken(r)),
-        apiKeyConfigured: Boolean(r.apiKey),
-        apiKeyLast4: r.apiKey ? String(r.apiKey).slice(-4) : "",
+        apiKeyConfigured: normalizeRelayKeys(r).length > 0,
+        apiKeys: normalizeRelayKeys(r).map((k) => ({ label: k.label, last4: k.key.slice(-4) })),
         modelCount: priceCaches.get(id)?.table ? Object.keys(priceCaches.get(id).table).length : 0,
       },
     ])),
@@ -712,6 +712,48 @@ function slugify(text) {
   return String(text).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "relay";
 }
 
+// Mirror of the frontend family classifier (keep in sync with app.js).
+function familyOf(modelId) {
+  const s = String(modelId).toLowerCase();
+  if (/^gpt|^o\d|^chatgpt|davinci|codex/.test(s)) return "openai";
+  if (/claude/.test(s)) return "anthropic";
+  if (/gemini|palm|bard|gemma/.test(s)) return "gemini";
+  if (/grok/.test(s)) return "grok";
+  if (/deepseek/.test(s)) return "deepseek";
+  if (/qwen|qwq/.test(s)) return "qwen";
+  if (/glm|thudm/.test(s)) return "zhipu";
+  if (/kimi|moonshot|^k\d/.test(s)) return "moonshot";
+  if (/mimo/.test(s)) return "xiaomi";
+  return "misc";
+}
+
+// A relay may hold several keys for different model families:
+//   apiKeys: [{ label: "openai", key: "sk-.." }, { label: "default", key: "sk-.." }]
+// Legacy single relay.apiKey migrates to { label: "default" }.
+function normalizeRelayKeys(relay) {
+  if (!Array.isArray(relay.apiKeys) || !relay.apiKeys.length) {
+    if (relay.apiKey) relay.apiKeys = [{ label: "default", key: String(relay.apiKey) }];
+    else relay.apiKeys = [];
+  }
+  relay.apiKeys = relay.apiKeys
+    .filter((k) => k && String(k.label || "").trim() && String(k.key || "").trim())
+    .map((k) => ({ label: String(k.label).trim(), key: String(k.key).trim() }));
+  return relay.apiKeys;
+}
+
+function pickApiKey(relay, modelId) {
+  const keys = normalizeRelayKeys(relay);
+  if (!keys.length) return null;
+  const fam = familyOf(modelId);
+  const byLabel = (l) => keys.find((k) => k.label.toLowerCase() === l);
+  const key =
+    byLabel(fam) ||
+    keys.find((k) => k.label.toLowerCase().includes(fam) || fam.includes(k.label.toLowerCase())) ||
+    byLabel("default") ||
+    keys[0];
+  return key;
+}
+
 function execSetx(name, value) {
   const { execFileSync } = require("child_process");
   execFileSync("setx.exe", [name, String(value)], { stdio: "ignore", windowsHide: true });
@@ -736,6 +778,37 @@ const server = http.createServer(async (req, res) => {
       const agents = Array.isArray(body?.agents) ? body.agents : [];
       const r = saveAgents(agents);
       sendJson(res, r.ok ? 200 : 400, r);
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  if (req.method === "GET" && p.startsWith("/api/relay-keys")) {
+    const id = new URL(req.url, "http://x").searchParams.get("id");
+    const relay = CONFIG.relays[id];
+    if (!relay) { sendJson(res, 404, { ok: false, error: "unknown relay" }); return; }
+    sendJson(res, 200, { ok: true, keys: normalizeRelayKeys(relay) });
+    return;
+  }
+
+  if (req.method === "POST" && p === "/api/relay-keys") {
+    try {
+      const body = await readBody(req);
+      const relay = CONFIG.relays[body.id];
+      if (!relay) throw new Error("unknown relay");
+      const keys = Array.isArray(body.keys) ? body.keys : [];
+      relay.apiKeys = keys
+        .filter((k) => String(k?.label || "").trim() && String(k?.key || "").trim())
+        .map((k) => ({ label: String(k.label).trim(), key: String(k.key).trim() }));
+      delete relay.apiKey;
+      const file = readUserConfigFile();
+      file.relays = file.relays || {};
+      file.relays[body.id] = file.relays[body.id] || {};
+      file.relays[body.id].apiKeys = relay.apiKeys;
+      delete file.relays[body.id].apiKey;
+      writeUserConfigFile(file);
+      sendJson(res, 200, { ok: true, count: relay.apiKeys.length });
     } catch (e) {
       sendJson(res, 400, { ok: false, error: e.message });
     }
@@ -770,7 +843,7 @@ const server = http.createServer(async (req, res) => {
         modelName: body.name,
         context: body.context,
         output: body.output,
-        apiKey: body.apiKey || relay.apiKey || undefined,
+        apiKey: pickApiKey(relay, body.model) || body.apiKey || undefined,
         providerTemplate: relay.providerTemplate,
         providerName: body.providerName,
       });
@@ -779,12 +852,13 @@ const server = http.createServer(async (req, res) => {
       // Model health with live pricing (stability needs a channel match and
       // stays "–" until the user maps one).
       if (result.ok) {
-        // If a real key is saved for this relay, swap it into the provider
+        // If a matching key is saved for this relay, swap it into the provider
         // whenever it still carries an {env:...} placeholder. Re-deploying an
         // existing model therefore "heals" the key without manual editing.
-        if (relay.apiKey) {
-          const keyResult = ensureProviderApiKey(CONFIG.opencodeConfigPath, body.provider, relay.apiKey);
-          if (keyResult.changed) result.message += " + API key embedded";
+        const resolvedKey = pickApiKey(relay, body.model);
+        if (resolvedKey) {
+          const keyResult = ensureProviderApiKey(CONFIG.opencodeConfigPath, body.provider, resolvedKey.key);
+          if (keyResult.changed) result.message += ` + API key [${resolvedKey.label}] embedded`;
         }
         const group = String(body.group || "default");
         const mapping = { priceGroup: group, channel: "", groupName: relay.priceGroupNames?.[group] || group };
