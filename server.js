@@ -211,7 +211,7 @@ const priceCaches = new Map(); // relayId -> { table, source }
 
 async function fetchNewApiPrices(relay) {
   const token = resolveRelayToken(relay);
-  const res = await fetch(`${relay.baseURL}/api/pricing`, {
+  const res = await fetch(`${relay.apiBase || relay.baseURL}/api/pricing`, {
     headers: token ? { Authorization: `Bearer ${token.token}` } : {},
     signal: AbortSignal.timeout(12000),
   });
@@ -244,13 +244,14 @@ async function loadPriceTable(relayId, relay) {
   if (priceCaches.has(relayId)) return priceCaches.get(relayId);
 
   if (relay.type === "newapi" || relay.type === "openai") {
+    const apiBase = relay.apiBase || relay.baseURL;
     try {
       let table;
       if (relay.type === "newapi") {
         table = await fetchNewApiPrices(relay);
       } else {
         const tk = resolveRelayToken(relay);
-        const res = await fetch(`${relay.baseURL}/v1/models`, {
+        const res = await fetch(`${apiBase}/v1/models`, {
           headers: tk ? { Authorization: `Bearer ${tk.token}` } : {},
           signal: AbortSignal.timeout(12000),
         });
@@ -270,7 +271,7 @@ async function loadPriceTable(relayId, relay) {
 
   // geiliapi (default)
   try {
-    const res = await fetch(`${relay.baseURL}${relay.pricingPath}`, { signal: AbortSignal.timeout(15000) });
+    const res = await fetch(`${relay.apiBase || relay.baseURL}${relay.pricingPath}`, { signal: AbortSignal.timeout(15000) });
     if (res.ok) {
       const parsed = parseGeiliBundle(await res.text());
       if (Object.keys(parsed).length > 0) {
@@ -785,6 +786,7 @@ const server = http.createServer(async (req, res) => {
       const entry = {
         name,
         baseURL,
+        apiBase: probe.apiBase || baseURL,
         type: probe.ok ? probe.type : "openai",
         tokenEnv: [tokenEnv],
         monitorPath: "/api/v1/channel-monitors",
@@ -832,12 +834,14 @@ const server = http.createServer(async (req, res) => {
       const relay = CONFIG.relays[body.id];
       if (!relay) throw new Error("unknown relay");
       const probe = await verifyRelay(relay);
-      if (probe.ok && probe.type !== relay.type) {
+      if (probe.ok && (probe.type !== relay.type || (probe.apiBase && probe.apiBase !== relay.apiBase))) {
         relay.type = probe.type;
+        if (probe.apiBase) relay.apiBase = probe.apiBase;
         priceCaches.delete(body.id);
         const file = readUserConfigFile();
         if (file.relays?.[body.id]) {
           file.relays[body.id].type = probe.type;
+          if (probe.apiBase) file.relays[body.id].apiBase = probe.apiBase;
           writeUserConfigFile(file);
         }
       }

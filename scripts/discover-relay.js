@@ -101,48 +101,61 @@ function parseNewApiPricing(data) {
 
 /**
  * Probe a relay base URL and detect what it speaks.
- * Returns { ok, type, prices, count, detail }.
+ * Panel UIs are often served under a subpath (/console, /panel...) while the
+ * JSON APIs live at the site root, so every strategy is tried against both
+ * the given base and the bare origin. The winning base is returned as apiBase.
+ * Returns { ok, type, prices, count, detail, apiBase }.
  */
 async function discoverRelay({ baseURL, token } = {}) {
   const base = normalizeBase(baseURL);
   if (!/^https?:\/\//.test(base)) return { ok: false, error: "baseURL must start with http(s)://" };
 
+  let origin = base;
+  try { origin = new URL(base).origin; } catch {}
+  const candidateBases = [...new Set([base, origin])];
+
   // 1) GeiliAPI-style static pricing bundle
-  try {
-    const res = await fetch(`${base}/model-pricing/assets/index-kczjgnt4.js`, { signal: AbortSignal.timeout(12000) });
-    if (res.ok) {
-      const txt = await res.text();
-      if (txt.includes("groupPrices:[")) {
-        const prices = parseGeiliBundle(txt);
-        if (Object.keys(prices).length) {
-          return { ok: true, type: "geiliapi", prices, count: Object.keys(prices).length, detail: "geili pricing bundle" };
+  for (const cb of candidateBases) {
+    try {
+      const res = await fetch(`${cb}/model-pricing/assets/index-kczjgnt4.js`, { signal: AbortSignal.timeout(12000) });
+      if (res.ok) {
+        const txt = await res.text();
+        if (txt.includes("groupPrices:[")) {
+          const prices = parseGeiliBundle(txt);
+          if (Object.keys(prices).length) {
+            return { ok: true, type: "geiliapi", prices, count: Object.keys(prices).length, detail: "geili pricing bundle", apiBase: cb };
+          }
         }
       }
-    }
-  } catch {}
+    } catch {}
+  }
 
   // 2) new-api / one-api style pricing endpoint
-  try {
-    const data = await fetchJson(`${base}/api/pricing`, token);
-    const prices = parseNewApiPricing(data);
-    if (Object.keys(prices).length) {
-      return { ok: true, type: "newapi", prices, count: Object.keys(prices).length, detail: "/api/pricing" };
-    }
-  } catch {}
+  for (const cb of candidateBases) {
+    try {
+      const data = await fetchJson(`${cb}/api/pricing`, token);
+      const prices = parseNewApiPricing(data);
+      if (Object.keys(prices).length) {
+        return { ok: true, type: "newapi", prices, count: Object.keys(prices).length, detail: "/api/pricing", apiBase: cb };
+      }
+    } catch {}
+  }
 
   // 3) Plain OpenAI-compatible model list (no prices available)
-  try {
-    const data = await fetchJson(`${base}/v1/models`, token);
-    const ids = (Array.isArray(data?.data) ? data.data : []).map((m) => m?.id).filter(Boolean);
-    if (ids.length) {
-      const prices = {};
-      for (const id of ids) prices[id] = { default: { in: null, out: null, currency: "USD" } };
-      return { ok: true, type: "openai", prices, count: ids.length, detail: "/v1/models (prices unavailable)" };
-    }
-    return { ok: false, error: "/v1/models returned no models" };
-  } catch (e) {
-    return { ok: false, error: `could not reach relay APIs (${e.message})` };
+  for (const cb of candidateBases) {
+    try {
+      const data = await fetchJson(`${cb}/v1/models`, token);
+      const ids = (Array.isArray(data?.data) ? data.data : []).map((m) => m?.id).filter(Boolean);
+      if (ids.length) {
+        const prices = {};
+        for (const id of ids) prices[id] = { default: { in: null, out: null, currency: "USD" } };
+        return { ok: true, type: "openai", prices, count: ids.length, detail: "/v1/models (prices unavailable)", apiBase: cb };
+      }
+      return { ok: false, error: "/v1/models returned no models" };
+    } catch {}
   }
+
+  return { ok: false, error: `could not reach relay APIs at ${candidateBases.join(" or ")}` };
 }
 
 /** Verify a stored relay still answers (uses its saved token when present). */
