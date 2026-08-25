@@ -581,14 +581,64 @@ function catalogGroups(state) {
 }
 
 function familyOf(modelId) {
+  return vendorOf(modelId).id;
+}
+
+const VENDOR_RULES = [
+  { id: "openai", label: "OpenAI", re: /^gpt|^o\d|^chatgpt|davinci|codex/ },
+  { id: "anthropic", label: "Anthropic Claude", re: /claude/ },
+  { id: "google", label: "Google Gemini", re: /gemini|palm|bard|gemma/ },
+  { id: "xai", label: "xAI Grok", re: /grok/ },
+  { id: "deepseek", label: "DeepSeek", re: /deepseek/ },
+  { id: "zhipu", label: "智谱 GLM", re: /glm|thudm|cogview|cogvideo/ },
+  { id: "moonshot", label: "Moonshot Kimi", re: /kimi|moonshot|^k\d/ },
+  { id: "qwen", label: "阿里 Qwen", re: /qwen|qwq/ },
+  { id: "minimax", label: "MiniMax", re: /minimax|abab/ },
+  { id: "xiaomi", label: "小米 MiMo", re: /mimo/ },
+  { id: "baidu", label: "文心 ERNIE", re: /ernie/ },
+  { id: "tencent", label: "混元 Hunyuan", re: /hunyuan/ },
+  { id: "meta", label: "Meta LLaMA", re: /llama|llava/ },
+  { id: "mistral", label: "Mistral", re: /mistral|mixtral/ },
+];
+
+function vendorOf(modelId) {
   const s = String(modelId).toLowerCase();
-  if (/^gpt|^o\d|^chatgpt|davinci/.test(s)) return "openai";
-  if (/claude/.test(s)) return "anthropic";
-  if (/gemini|palm|bard/.test(s)) return "gemini";
-  if (/grok/.test(s)) return "grok";
-  if (/deepseek/.test(s)) return "deepseek";
-  if (/qwen|glm|thudm|kimi|moonshot|minimax|yi-|baichuan|internlm|hunyuan|spark|ernie|mimo/.test(s)) return "cn";
-  return "misc";
+  return VENDOR_RULES.find((v) => v.re.test(s)) || { id: "other", label: "Other / 开源" };
+}
+
+const UTILITY_RE = /(tts|asr|audio|speech|whisper|voiceclone|voicedesign|image|ocr|embed|rerank|moderation|kolors|dall|transcribe)/i;
+
+// Rough release-order score: higher = newer. Date suffix (yyyymmdd) wins,
+// then semantic version digits, small penalties for preview/experimental.
+function releaseScore(modelId) {
+  const s = String(modelId).toLowerCase();
+  const dateMatch = s.match(/(20\d{6})/);
+  // Strip parameter-size tokens (8b, 4b...) and role words so they don't
+  // pollute version comparison.
+  const cleaned = s.replace(/\d+b\b/g, " ").replace(/instruct|chat|base|\bvl\b/g, " ");
+  let nums = [...cleaned.matchAll(/\d+/g)].map((m) => parseInt(m[0], 10));
+  if (dateMatch) nums = nums.filter((n) => n !== parseInt(dateMatch[1], 10));
+  let score = 0;
+  for (let i = 0; i < nums.length; i++) score += Math.min(nums[i], 99) / Math.pow(100, i);
+  if (/preview|-exp\b|experimental/.test(s)) score -= 0.05;
+  if (/\blow\b/.test(s)) score -= 0.02;
+  if (/(^|[-_.])(lite|mini|nano)([-_.]|$)/.test(s)) score -= 0.03;
+  if (/(^|[-_.])flash([-_.]|$)/.test(s)) score -= 0.01;
+  if (dateMatch) {
+    const d = parseInt(dateMatch[1], 10);
+    score += ((d % 10000000) / 10000000) * 0.9 + 0.001;
+  }
+  return score;
+}
+
+function compareModelsNewestFirst(a, b) {
+  const ua = UTILITY_RE.test(a) ? 1 : 0;
+  const ub = UTILITY_RE.test(b) ? 1 : 0;
+  if (ua !== ub) return ua - ub;
+  const sa = releaseScore(a);
+  const sb = releaseScore(b);
+  if (Math.abs(sa - sb) > 1e-9) return sb - sa;
+  return a.localeCompare(b);
 }
 
 function suggestProviderId(state, relayId, modelId) {
@@ -736,7 +786,25 @@ function renderCatalog(state) {
     cell.innerHTML = `<b>${relay.name}</b><small>${models.length} deployable</small>`;
     header.append(cell);
     rows.push(header);
-    for (const modelId of models) rows.push(createCatalogRow(state, modelId, relayId, table));
+
+    // Vendor sub-groups, newest releases first within each vendor.
+    const byVendor = new Map();
+    for (const modelId of models) {
+      const v = vendorOf(modelId);
+      if (!byVendor.has(v.id)) byVendor.set(v.id, { label: v.label, models: [] });
+      byVendor.get(v.id).models.push(modelId);
+    }
+    for (const { label, models: vendorModels } of byVendor.values()) {
+      vendorModels.sort(compareModelsNewestFirst);
+      const vRow = document.createElement("tr");
+      vRow.className = "catalog-vendor-row";
+      const vCell = document.createElement("td");
+      vCell.colSpan = 5;
+      vCell.innerHTML = `${label}<small>${vendorModels.length}</small>`;
+      vRow.append(vCell);
+      rows.push(vRow);
+      for (const modelId of vendorModels) rows.push(createCatalogRow(state, modelId, relayId, table));
+    }
   }
 
   elements.catalogBody.replaceChildren(...rows);
