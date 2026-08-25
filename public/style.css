@@ -955,7 +955,8 @@ tbody .stability-column {
   gap: 8px;
 }
 
-.key-add-row input {
+.key-add-row input,
+.key-add-row select {
   padding: 9px 11px;
   border: 1px solid var(--border-strong);
   border-radius: 5px;
@@ -965,7 +966,8 @@ tbody .stability-column {
   font-size: 12px;
 }
 
-.key-add-row input:focus {
+.key-add-row input:focus,
+.key-add-row select:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);

@@ -42,7 +42,7 @@ const elements = {
   keyModal: document.querySelector("#keyModal"),
   keyModalRelay: document.querySelector("#keyModalRelay"),
   keyList: document.querySelector("#keyList"),
-  keyLabelInput: document.querySelector("#keyLabelInput"),
+  keyLabelSelect: document.querySelector("#keyLabelSelect"),
   keyInput: document.querySelector("#keyInput"),
   keyAddButton: document.querySelector("#keyAddButton"),
   keyCancelButton: document.querySelector("#keyCancelButton"),
@@ -1258,7 +1258,6 @@ async function openKeyModal(relayId, relay) {
   keyDraftRelayId = relayId;
   elements.keyModal.dataset.relay = relayId;
   elements.keyModalRelay.textContent = relay.name || relayId;
-  elements.keyLabelInput.value = "";
   elements.keyInput.value = "";
   keyDraft = [];
   elements.keyList.replaceChildren();
@@ -1267,9 +1266,45 @@ async function openKeyModal(relayId, relay) {
     const data = await res.json().catch(() => null);
     if (data?.ok && Array.isArray(data.keys)) keyDraft = data.keys.map((k) => ({ ...k }));
   } catch {}
+  populateKeyLabelOptions(relayId);
   renderKeyDraft();
   elements.keyModal.hidden = false;
-  elements.keyLabelInput.focus();
+  elements.keyLabelSelect.focus();
+}
+
+// Label options come from the vendor families actually present in this
+// relay's deployable-model table, plus a "default" fallback.
+function populateKeyLabelOptions(relayId) {
+  const table = dashboardState?.relayPrices?.[relayId] || {};
+  const famMap = new Map();
+  for (const modelId of Object.keys(table)) {
+    const v = vendorOf(modelId);
+    if (!famMap.has(v.id)) famMap.set(v.id, v.label);
+  }
+  const sel = elements.keyLabelSelect;
+  sel.replaceChildren();
+  const add = (value, text) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    sel.append(option);
+  };
+  add("default", "default · 兜底匹配");
+  for (const [id, label] of [...famMap.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    add(id, `${id} · ${label}`);
+  }
+  for (const k of keyDraft) {
+    if (![...sel.options].some((o) => o.value === k.label)) add(k.label, `${k.label} · 自定义`);
+  }
+  markKeyOptions();
+}
+
+function markKeyOptions() {
+  const has = new Set(keyDraft.map((k) => k.label.toLowerCase()));
+  for (const option of elements.keyLabelSelect.options) {
+    option.textContent = option.textContent.replace(/ ✓$/, "");
+    if (has.has(option.value.toLowerCase())) option.textContent += " ✓";
+  }
 }
 
 function renderKeyDraft() {
@@ -1297,10 +1332,12 @@ function renderKeyDraft() {
     del.addEventListener("click", () => {
       keyDraft = keyDraft.filter((x) => x !== k);
       renderKeyDraft();
+      markKeyOptions();
     });
     row.append(label, masked, del);
     list.append(row);
   }
+  markKeyOptions();
 }
 
 function closeKeyModal() {
@@ -1329,7 +1366,7 @@ async function submitKeys() {
 }
 
 function addKeyToDraft() {
-  const label = elements.keyLabelInput.value.trim();
+  const label = elements.keyLabelSelect.value.trim();
   const key = elements.keyInput.value.trim();
   if (!label || !key) {
     showToast("error", "Missing fields", "标签和 key 都要填。");
@@ -1337,7 +1374,6 @@ function addKeyToDraft() {
   }
   keyDraft = keyDraft.filter((k) => k.label.toLowerCase() !== label.toLowerCase());
   keyDraft.push({ label, key });
-  elements.keyLabelInput.value = "";
   elements.keyInput.value = "";
   renderKeyDraft();
 }

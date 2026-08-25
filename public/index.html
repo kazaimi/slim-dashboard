@@ -247,13 +247,13 @@
     <div class="modal-overlay" id="keyModal" hidden>
       <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="keyModalTitle">
         <h3 id="keyModalTitle">API Keys</h3>
-        <p class="modal-hint">同一中转站可建多个 key，按标签对应不同模型族（openai / anthropic / gemini / deepseek / grok / cn / default）。部署时按模型家族自动匹配。</p>
+        <p class="modal-hint">同一中转站可建多个 key。标签下拉由该站可部署模型的厂商分类自动生成，部署时按模型家族自动匹配；default 为兜底。</p>
         <label class="field">
           <span id="keyModalRelay">Relay</span>
         </label>
         <div id="keyList" class="key-list"></div>
         <div class="key-add-row">
-          <input id="keyLabelInput" placeholder="标签 (openai / default …)" autocomplete="off" />
+          <select id="keyLabelSelect"></select>
           <input id="keyInput" placeholder="sk-…" autocomplete="off" />
           <button class="button button--secondary" id="keyAddButton" type="button">添加</button>
         </div>
