@@ -963,6 +963,20 @@ tbody .stability-column {
   font-size: 11px;
 }
 
+.key-row--auto {
+  opacity: 0.85;
+}
+
+.key-auto-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(81, 230, 168, 0.3);
+  font-size: 9px;
+  letter-spacing: 0.5px;
+}
+
 .key-add-row {
   display: grid;
   grid-template-columns: 1fr 1fr auto;

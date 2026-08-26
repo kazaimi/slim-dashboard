@@ -1263,6 +1263,7 @@ elements.tableBody.addEventListener("dragend", () => {
 });
 
 let keyDraft = [];
+let keyAutoEntries = [];
 let keyDraftRelayId = null;
 
 async function openKeyModal(relayId, relay) {
@@ -1277,6 +1278,11 @@ async function openKeyModal(relayId, relay) {
     const data = await res.json().catch(() => null);
     if (data?.ok && Array.isArray(data.keys)) keyDraft = data.keys.map((k) => ({ ...k }));
   } catch {}
+  // Auto-discovered keys (from same-host providers) shown alongside, not editable.
+  const meta = dashboardState?.relays?.[relayId];
+  keyAutoEntries = (meta?.apiKeys || [])
+    .filter((k) => !keyDraft.some((d) => d.label.toLowerCase() === k.label.toLowerCase()))
+    .map((k) => ({ label: k.label, last4: k.last4 || "" }));
   populateKeyLabelOptions(relayId);
   renderKeyDraft();
   elements.keyModal.hidden = false;
@@ -1307,6 +1313,7 @@ function populateKeyLabelOptions(relayId) {
   for (const k of keyDraft) {
     if (![...sel.options].some((o) => o.value === k.label)) add(k.label, `${k.label} · 自定义`);
   }
+  sel.title = "可选分类: " + [...sel.options].map((o) => o.value).join(", ");
   markKeyOptions();
 }
 
@@ -1321,7 +1328,7 @@ function markKeyOptions() {
 function renderKeyDraft() {
   const list = elements.keyList;
   list.replaceChildren();
-  if (!keyDraft.length) {
+  if (!keyDraft.length && !keyAutoEntries.length) {
     const empty = document.createElement("p");
     empty.className = "key-empty";
     empty.textContent = "尚未保存任何 key。";
@@ -1335,7 +1342,7 @@ function renderKeyDraft() {
     label.textContent = k.label;
     const masked = document.createElement("span");
     masked.className = "key-masked";
-    masked.textContent = "••••" + (k.key ? k.key.slice(-4) : k.last4 || "");
+    masked.textContent = "••••" + (k.key ? k.key.slice(-4) : "");
     const del = document.createElement("button");
     del.type = "button";
     del.className = "chip-btn chip-btn--danger";
@@ -1346,6 +1353,22 @@ function renderKeyDraft() {
       markKeyOptions();
     });
     row.append(label, masked, del);
+    list.append(row);
+  }
+  for (const k of keyAutoEntries) {
+    if (keyDraft.some((d) => d.label.toLowerCase() === k.label.toLowerCase())) continue;
+    const row = document.createElement("div");
+    row.className = "key-row key-row--auto";
+    const label = document.createElement("b");
+    label.textContent = k.label;
+    const badge = document.createElement("span");
+    badge.className = "key-auto-badge";
+    badge.textContent = "自动发现";
+    badge.title = "来自 opencode.jsonc 同域 provider，部署时同样可用";
+    const masked = document.createElement("span");
+    masked.className = "key-masked";
+    masked.textContent = "••••" + (k.last4 || "");
+    row.append(label, badge, masked);
     list.append(row);
   }
   markKeyOptions();
