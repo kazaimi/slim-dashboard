@@ -761,6 +761,9 @@ function hostOfUrl(url) {
 // Discover keys already configured in opencode.jsonc for providers pointing
 // at this relay's API host. Literal keys count immediately; {env:VAR} refs
 // are resolved against process env and the user's registry.
+// Labels are derived from the FAMILIES each provider actually serves
+// (geili_api hosts claude models -> label "anthropic"), so deploy-time
+// family matching works naturally.
 function scanProviderKeys(relayId) {
   const relay = CONFIG.relays[relayId];
   if (!relay) return [];
@@ -769,6 +772,7 @@ function scanProviderKeys(relayId) {
   const cfg = readOpencodeConfig();
   const provs = cfg?.provider || {};
   const out = [];
+  const seenLabel = new Set();
   const seenValues = new Set();
   for (const [pid, p] of Object.entries(provs)) {
     const baseHost = hostOfUrl(p?.options?.baseURL);
@@ -779,10 +783,24 @@ function scanProviderKeys(relayId) {
     const envRef = String(raw).match(/^\{env:([^}]+)\}$/);
     if (envRef) value = process.env[envRef[1]] || readUserEnv(envRef[1]) || null;
     else if (!String(raw).startsWith("{")) value = String(raw);
-    if (!value || seenValues.has(value)) continue;
+    if (!value) continue;
+
+    const modelIds = Object.keys(p.models || {});
+    const families = [...new Set(modelIds.map((id) => familyOf(id)))].filter((f) => f !== "misc");
+    if (families.length) {
+      for (const fam of families) {
+        const label = fam.toLowerCase();
+        if (seenLabel.has(label)) continue;
+        seenLabel.add(label);
+        out.push({ label, key: value });
+      }
+    } else {
+      const label = (pid.includes("_") ? pid.split("_").slice(1).join("_") : pid).toLowerCase();
+      if (seenLabel.has(label) || seenValues.has(value)) continue;
+      seenLabel.add(label);
+      out.push({ label, key: value });
+    }
     seenValues.add(value);
-    const label = pid.includes("_") ? pid.split("_").slice(1).join("_") : pid;
-    out.push({ label, key: value });
   }
   return out;
 }
