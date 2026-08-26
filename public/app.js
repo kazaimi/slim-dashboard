@@ -756,16 +756,21 @@ async function deployCatalogModel(state, modelId, groupId, targetProvider, relay
   }
 }
 
-function resolveKeyHint(state, relayId, modelId) {
+function resolveKeyLabel(state, relayId, modelId) {
   const keys = state.relays?.[relayId]?.apiKeys || [];
-  if (!keys.length) return " | ⚠ 未配置 API key，部署后需手动填入";
+  if (!keys.length) return null;
   const fam = familyOf(modelId);
   const match =
     keys.find((k) => k.label.toLowerCase() === fam) ||
     keys.find((k) => k.label.toLowerCase().includes(fam) || fam.includes(k.label.toLowerCase())) ||
     keys.find((k) => k.label.toLowerCase() === "default") ||
     keys[0];
-  return ` | 将使用 key [${match.label}]`;
+  return match ? match.label : null;
+}
+
+function resolveKeyHint(state, relayId, modelId) {
+  const label = resolveKeyLabel(state, relayId, modelId);
+  return label ? ` | 将使用 key [${label}]` : " | ⚠ 未配置 API key，部署后需手动填入";
 }
 
 function createCatalogRow(state, modelId, relayId, table) {
@@ -779,6 +784,12 @@ function createCatalogRow(state, modelId, relayId, table) {
   const ownerRelay = state.relays?.[relayId];
   modelCell.textContent = modelId;
   if (ownerRelay) modelCell.title = `from relay: ${ownerRelay.name} (${ownerRelay.baseURL})`;
+
+  const keyLabel = resolveKeyLabel(state, relayId, modelId);
+  const keyBadge = document.createElement("div");
+  keyBadge.className = `model-key ${keyLabel ? "model-key--ok" : "model-key--none"}`;
+  keyBadge.textContent = keyLabel ? `🔑 ${keyLabel}` : "⚠ 未配 key";
+  modelCell.append(keyBadge);
 
   const groupCell = document.createElement("td");
   const groupSelect = document.createElement("select");

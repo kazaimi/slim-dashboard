@@ -725,6 +725,20 @@ tbody .stability-column {
   color: var(--text-dim);
 }
 
+.model-key {
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.model-key--ok {
+  color: var(--accent);
+}
+
+.model-key--none {
+  color: var(--warning);
+}
+
 .catalog-toggle-row {
   cursor: pointer;
   user-select: none;
