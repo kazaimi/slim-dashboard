@@ -548,18 +548,18 @@ async function buildMergedView() {
     modelRelays,
     relayPrices: relayPriceTables,
     notices,
-    relays: Object.fromEntries(Object.entries(CONFIG.relays).map(([id, r]) => [
-      id,
-      {
+    relays: Object.fromEntries(Object.entries(CONFIG.relays).map(([id, r]) => {
+      const effKeys = getEffectiveApiKeys(id);
+      return [id, {
         name: r.name,
         baseURL: r.baseURL,
         type: r.type || "geiliapi",
         tokenConfigured: Boolean(resolveRelayToken(r)),
-        apiKeyConfigured: normalizeRelayKeys(r).length > 0,
-        apiKeys: normalizeRelayKeys(r).map((k) => ({ label: k.label, last4: k.key.slice(-4) })),
+        apiKeyConfigured: effKeys.length > 0,
+        apiKeys: effKeys.map((k) => ({ label: k.label, last4: k.key.slice(-4) })),
         modelCount: priceCaches.get(id)?.table ? Object.keys(priceCaches.get(id).table).length : 0,
-      },
-    ])),
+      }];
+    })),
   };
 }
 
@@ -741,8 +741,8 @@ function normalizeRelayKeys(relay) {
   return relay.apiKeys;
 }
 
-function pickApiKey(relay, modelId) {
-  const keys = normalizeRelayKeys(relay);
+function pickApiKey(relay, modelId, relayId) {
+  const keys = relayId ? getEffectiveApiKeys(relayId) : normalizeRelayKeys(relay);
   if (!keys.length) return null;
   const fam = familyOf(modelId);
   const byLabel = (l) => keys.find((k) => k.label.toLowerCase() === l);
@@ -752,6 +752,52 @@ function pickApiKey(relay, modelId) {
     byLabel("default") ||
     keys[0];
   return key;
+}
+
+function hostOfUrl(url) {
+  try { return new URL(url).hostname; } catch { return ""; }
+}
+
+// Discover keys already configured in opencode.jsonc for providers pointing
+// at this relay's API host. Literal keys count immediately; {env:VAR} refs
+// are resolved against process env and the user's registry.
+function scanProviderKeys(relayId) {
+  const relay = CONFIG.relays[relayId];
+  if (!relay) return [];
+  const hosts = [hostOfUrl(relay.baseURL), hostOfUrl(relay.apiBase)].filter(Boolean);
+  if (!hosts.length) return [];
+  const cfg = readOpencodeConfig();
+  const provs = cfg?.provider || {};
+  const out = [];
+  const seenValues = new Set();
+  for (const [pid, p] of Object.entries(provs)) {
+    const baseHost = hostOfUrl(p?.options?.baseURL);
+    if (!baseHost || !hosts.includes(baseHost)) continue;
+    const raw = p?.options?.apiKey;
+    if (!raw) continue;
+    let value = null;
+    const envRef = String(raw).match(/^\{env:([^}]+)\}$/);
+    if (envRef) value = process.env[envRef[1]] || readUserEnv(envRef[1]) || null;
+    else if (!String(raw).startsWith("{")) value = String(raw);
+    if (!value || seenValues.has(value)) continue;
+    seenValues.add(value);
+    const label = pid.includes("_") ? pid.split("_").slice(1).join("_") : pid;
+    out.push({ label, key: value });
+  }
+  return out;
+}
+
+// Effective key pool = manually saved keys first, then auto-discovered ones
+// from same-host providers (labels derived from the provider id).
+function getEffectiveApiKeys(relayId) {
+  const relay = CONFIG.relays[relayId];
+  if (!relay) return [];
+  const manual = normalizeRelayKeys(relay);
+  const manualLabels = new Set(manual.map((k) => k.label.toLowerCase()));
+  const scanned = scanProviderKeys(relayId).filter(
+    (k) => !manualLabels.has(k.label.toLowerCase()) && !manual.some((m) => m.key === k.key)
+  );
+  return [...manual, ...scanned];
 }
 
 function execSetx(name, value) {
@@ -843,7 +889,7 @@ const server = http.createServer(async (req, res) => {
         modelName: body.name,
         context: body.context,
         output: body.output,
-        apiKey: pickApiKey(relay, body.model) || body.apiKey || undefined,
+        apiKey: pickApiKey(relay, body.model, relayId) || body.apiKey || undefined,
         providerTemplate: relay.providerTemplate,
         providerName: body.providerName,
       });
@@ -855,7 +901,7 @@ const server = http.createServer(async (req, res) => {
         // If a matching key is saved for this relay, swap it into the provider
         // whenever it still carries an {env:...} placeholder. Re-deploying an
         // existing model therefore "heals" the key without manual editing.
-        const resolvedKey = pickApiKey(relay, body.model);
+        const resolvedKey = pickApiKey(relay, body.model, relayId);
         if (resolvedKey) {
           const keyResult = ensureProviderApiKey(CONFIG.opencodeConfigPath, body.provider, resolvedKey.key);
           if (keyResult.changed) result.message += ` + API key [${resolvedKey.label}] embedded`;
