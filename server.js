@@ -746,12 +746,12 @@ function pickApiKey(relay, modelId, relayId) {
   if (!keys.length) return null;
   const fam = familyOf(modelId);
   const byLabel = (l) => keys.find((k) => k.label.toLowerCase() === l);
+  // Strict: exact family label, label containing the family, or "default".
   const key =
     byLabel(fam) ||
-    keys.find((k) => k.label.toLowerCase().includes(fam) || fam.includes(k.label.toLowerCase())) ||
-    byLabel("default") ||
-    keys[0];
-  return key;
+    keys.find((k) => k.label.toLowerCase().includes(fam)) ||
+    byLabel("default");
+  return key || null;
 }
 
 function hostOfUrl(url) {

@@ -760,17 +760,18 @@ function resolveKeyLabel(state, relayId, modelId) {
   const keys = state.relays?.[relayId]?.apiKeys || [];
   if (!keys.length) return null;
   const fam = familyOf(modelId);
+  // Strict matching: exact label, label containing the family name, or an
+  // explicit "default" tag. No silent fallback to the first key.
   const match =
     keys.find((k) => k.label.toLowerCase() === fam) ||
-    keys.find((k) => k.label.toLowerCase().includes(fam) || fam.includes(k.label.toLowerCase())) ||
-    keys.find((k) => k.label.toLowerCase() === "default") ||
-    keys[0];
+    keys.find((k) => k.label.toLowerCase().includes(fam)) ||
+    keys.find((k) => k.label.toLowerCase() === "default");
   return match ? match.label : null;
 }
 
 function resolveKeyHint(state, relayId, modelId) {
   const label = resolveKeyLabel(state, relayId, modelId);
-  return label ? ` | 将使用 key [${label}]` : " | ⚠ 未配置 API key，部署后需手动填入";
+  return label ? ` | 将使用 key [${label}]` : " | ⚠ 未配置该模型族的 key，部署后需手动填入（或添加 default 标签的 key）";
 }
 
 function createCatalogRow(state, modelId, relayId, table) {
