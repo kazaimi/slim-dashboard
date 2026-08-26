@@ -1380,12 +1380,25 @@ function closeKeyModal() {
 
 async function submitKeys() {
   const relayId = keyDraftRelayId;
+  // Foolproofing: auto-include whatever is still sitting in the input row,
+  // so pasting + Save works without requiring the 添加 click.
+  const pendingLabel = elements.keyLabelSelect.value.trim();
+  const pendingKey = elements.keyInput.value.trim();
+  let draft = [...keyDraft];
+  if (pendingLabel && pendingKey) {
+    draft = draft.filter((k) => k.label.toLowerCase() !== pendingLabel.toLowerCase());
+    draft.push({ label: pendingLabel, key: pendingKey });
+  }
+  if (!draft.length) {
+    showToast("error", "Nothing to save", "请先下拉选分类、粘贴 key，再保存。");
+    return;
+  }
   elements.keySaveButton.disabled = true;
   try {
     const response = await fetch("/api/relay-keys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: relayId, keys: keyDraft }),
+      body: JSON.stringify({ id: relayId, keys: draft }),
     });
     const result = await response.json().catch(() => null);
     if (!response.ok || !result?.ok) throw new Error(result?.error || "save failed");
