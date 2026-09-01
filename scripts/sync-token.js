@@ -135,7 +135,22 @@ async function harvestRelay(relayId, relay) {
       return { relayId, ok: false, error: `no token found in logged-in ${sitePattern} pages. Open the relay site in the debug Chrome window and log in first.` };
     }
     unique.sort((a, b) => b.priority - a.priority || b.value.length - a.value.length);
-    return { relayId, ok: true, source: unique[0].source, value: unique[0].value };
+
+    // A stale cookie can look exactly like a valid session token. Validate
+    // candidates before persisting one, so an expired token cannot replace a
+    // working value and leave the dashboard silently on cached data.
+    for (const candidate of unique) {
+      try {
+        const response = await fetch(`${relay.baseURL}${relay.monitorPath || "/api/v1/channel-monitors"}`, {
+          headers: { Authorization: `Bearer ${candidate.value}` },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (response.status !== 401 && response.status !== 403) {
+          return { relayId, ok: true, source: candidate.source, value: candidate.value };
+        }
+      } catch {}
+    }
+    return { relayId, ok: false, error: `found token candidates, but all were rejected or expired by ${relay.baseURL}` };
   } catch (e) {
     browser._connection?.close();
     return { relayId, ok: false, error: e.message };

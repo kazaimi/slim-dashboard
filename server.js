@@ -34,7 +34,7 @@ const DEFAULT_RELAY = {
   providers: {
     geili_openai: { priceGroup: "27", channel: "GPT 给力 Pro", groupName: "GPT 给力 Pro" },
     geili_grok: { priceGroup: "heavy", channel: "Grok（Heavy）", groupName: "Grok Heavy" },
-    geili_guomo: { priceGroup: "82", channel: "国模综合", groupName: "国模综合" },
+    geili_chaosuan: { priceGroup: "87", channel: "DS/Qwen-超算", groupName: "DS/Qwen-超算" },
     geili_deepseek_flash: { priceGroup: "flash-low", channel: "福利 Flash", groupName: "福利 Flash" },
     geili_api: { priceGroup: "47", channel: "CC-kiro", groupName: "CC-Kiro" },
     geili_gemini: { priceGroup: "41", channel: "Gemini", groupName: "Gemini" },
@@ -47,21 +47,21 @@ const DEFAULT_RELAY = {
     47: "CC-Kiro",
     67: "Grok",
     80: "Pro 更稳定",
-    82: "国模综合",
+    87: "DS/Qwen-超算",
     heavy: "Grok Heavy",
     "flash-low": "福利 Flash",
   },
   overrides: [
-    // 国模综合 for deepseek-v4-pro/flash: show official price instead of the
+    // DS/Qwen pricing for deepseek-v4-pro/flash: show official price instead of the
     // manually-configured 0.2x entry derived from a different base.
-    { models: ["deepseek-v4-pro", "deepseek-v4-flash"], group: "82", useOfficial: true, currency: "CNY" },
+    { models: ["deepseek-v4-pro", "deepseek-v4-flash"], group: "87", useOfficial: true, currency: "CNY" },
     // Group 4 GPT multiplier changed 0.1 -> 0.15 on the gateway while the
     // pricing bundle still reports 0.1; recompute as official x 0.15.
     { models: ["gpt-*"], group: "4", multiplier: 0.15 },
   ],
   syntheticGroups: [
     { id: "heavy", name: "Grok Heavy", baseGroup: "67", models: ["grok-4.5", "grok-4.6"], multiplier: 0.15 },
-    { id: "flash-low", name: "福利 Flash", baseGroup: "82", models: ["deepseek-v4-flash"], multiplier: 0.01, currency: "CNY" },
+    { id: "flash-low", name: "福利 Flash", baseGroup: "87", models: ["deepseek-v4-flash"], multiplier: 0.01, currency: "CNY" },
   ],
   tokenSync: {
     cdpUrl: "http://127.0.0.1:9222",
@@ -228,6 +228,66 @@ function applySyntheticGroups(prices, syntheticGroups) {
 
 const priceCaches = new Map(); // relayId -> { table, source }
 
+async function fetchAvailableGroups(relay) {
+  const token = resolveRelayToken(relay);
+  if (!token) return [];
+  try {
+    const res = await fetch(`${relay.baseURL}/api/v1/groups/available`, {
+      headers: { Authorization: `Bearer ${token.token}` },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) return [];
+    const payload = await res.json();
+    if (!Array.isArray(payload?.data)) return [];
+    return payload.data
+      .filter((group) => group && group.id != null)
+      .map((group) => ({
+        id: String(group.id),
+        name: group.name == null ? "" : String(group.name),
+        rateMultiplier: Number(group.rate_multiplier),
+        platform: group.platform == null ? "" : String(group.platform),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+async function loadAvailableGroups(relayId, relay, cache) {
+  if (cache.availableGroupsLoaded) return cache.availableGroups;
+  if (!cache.availableGroupsPromise) {
+    cache.availableGroupsPromise = fetchAvailableGroups(relay).then((groups) => {
+      cache.availableGroups = groups;
+      cache.availableGroupsLoaded = true;
+      delete cache.availableGroupsPromise;
+      return groups;
+    });
+  }
+  return cache.availableGroupsPromise;
+}
+
+function applyAvailableGroups(prices, groups, syntheticGroups) {
+  const groupNames = {};
+  const syntheticIds = new Set((syntheticGroups || []).map((group) => String(group?.id)));
+  const available = new Map();
+  for (const group of groups || []) {
+    if (syntheticIds.has(group.id)) continue;
+    available.set(group.id, group);
+    if (group.name) groupNames[group.id] = group.name;
+  }
+  for (const modelGroups of Object.values(prices)) {
+    if (!modelGroups || typeof modelGroups !== "object") continue;
+    for (const [groupId, entry] of Object.entries(modelGroups)) {
+      const group = available.get(String(groupId));
+      if (!group || !entry || !Number.isFinite(group.rateMultiplier)) continue;
+      entry.mult = String(group.rateMultiplier);
+      if (entry.officialIn != null) entry.in = fmtNum(Number(entry.officialIn) * group.rateMultiplier);
+      if (entry.officialOut != null) entry.out = fmtNum(Number(entry.officialOut) * group.rateMultiplier);
+      if (entry.officialCache != null) entry.cache = fmtNum(Number(entry.officialCache) * group.rateMultiplier);
+    }
+  }
+  return groupNames;
+}
+
 async function fetchNewApiPrices(relay) {
   const token = resolveRelayToken(relay);
   const res = await fetch(`${relay.apiBase || relay.baseURL}/api/pricing`, {
@@ -292,17 +352,30 @@ async function loadPriceTable(relayId, relay) {
     }
   }
 
-  // geiliapi (default)
+  // geiliapi (default). The pricing SPA uses hashed asset names that change
+  // whenever the catalog is rebuilt, so discover the current bundle instead
+  // of relying forever on the filename from an older deployment.
+  const base = relay.apiBase || relay.baseURL;
+  const paths = [relay.pricingPath].filter(Boolean);
   try {
-    const res = await fetch(`${relay.apiBase || relay.baseURL}${relay.pricingPath}`, { signal: AbortSignal.timeout(15000) });
-    if (res.ok) {
+    const page = await fetch(`${base}/model-pricing`, { signal: AbortSignal.timeout(15000) });
+    if (page.ok) {
+      const html = await page.text();
+      const match = html.match(/(?:src|href)=["']([^"']*\/model-pricing\/assets\/[^"']+\.js)["']/i);
+      if (match?.[1] && !paths.includes(match[1])) paths.unshift(match[1]);
+    }
+  } catch {}
+  for (const pricingPath of paths) {
+    try {
+      const res = await fetch(`${base}${pricingPath.startsWith("/") ? pricingPath : `/${pricingPath}`}`, { signal: AbortSignal.timeout(15000) });
+      if (!res.ok) continue;
       const parsed = parseGeiliBundle(await res.text());
       if (Object.keys(parsed).length > 0) {
         priceCaches.set(relayId, { table: parsed, source: "live" });
         return priceCaches.get(relayId);
       }
-    }
-  } catch {}
+    } catch {}
+  }
   const fbPath = path.join(CONFIG.dataDir, `price-fallback${relayId === "geiliapi" ? "" : "-" + relayId}.json`);
   try {
     const fb = JSON.parse(fs.readFileSync(fbPath, "utf8"));
@@ -316,11 +389,21 @@ async function loadPriceTable(relayId, relay) {
 }
 
 async function fetchPriceData(relayId, relay) {
-  const { table, source } = await loadPriceTable(relayId, relay);
+  const cache = await loadPriceTable(relayId, relay);
+  const { table, source } = cache;
   const prices = structuredClone(table);
+  for (const groups of Object.values(prices)) {
+    if (!groups || typeof groups !== "object") continue;
+    if (Object.prototype.hasOwnProperty.call(groups, "82") && !Object.prototype.hasOwnProperty.call(groups, "87")) {
+      groups["87"] = groups["82"];
+      delete groups["82"];
+    }
+  }
   applyOverrides(prices, relay.overrides);
+  const availableGroups = relay.type === "geiliapi" ? await loadAvailableGroups(relayId, relay, cache) : [];
+  const runtimeGroupNames = relay.type === "geiliapi" ? applyAvailableGroups(prices, availableGroups, relay.syntheticGroups) : {};
   applySyntheticGroups(prices, relay.syntheticGroups);
-  return { ok: true, prices, source, count: Object.keys(prices).length };
+  return { ok: true, prices, source, count: Object.keys(prices).length, runtimeGroupNames };
 }
 
 // ---------------------------------------------------------------------------
@@ -350,11 +433,91 @@ function summarizeTimeline(timeline) {
   const list = Array.isArray(timeline) ? timeline.slice(-60) : [];
   const counts = { operational: 0, degraded: 0, error: 0, unknown: 0 };
   for (const t of list) {
-    const s = t && t.status ? String(t.status) : "unknown";
+    const s = normalizeStabilityStatus(t);
     if (Object.prototype.hasOwnProperty.call(counts, s)) counts[s]++;
     else counts.unknown++;
   }
   return { total: list.length, counts };
+}
+
+function normalizeStabilityStatus(value) {
+  const raw = value && typeof value === "object"
+    ? (value.status ?? value.primary_status ?? value.primaryStatus ?? value.state ?? value.result ?? value.health ?? value.data?.status ?? value.channel?.status ?? (value.ok === true || value.success === true ? "operational" : value.ok === false || value.success === false ? "error" : value.status_code >= 400 ? "error" : "unknown"))
+    : value;
+  const status = String(raw ?? "unknown").toLowerCase();
+  if (/^(ok|up|online|healthy|operational|success|passed|正常|运行中)$/.test(status)) return "operational";
+  if (/degrad|warn|slow|部分|警告/.test(status)) return "degraded";
+  if (/error|fail|down|offline|unhealthy|timeout|异常|错误|失败/.test(status) || /^\d{3}$/.test(status) && Number(status) >= 400) return "error";
+  return "unknown";
+}
+
+function firstStabilityValue(item, keys) {
+  for (const key of keys) {
+    const value = key.split(".").reduce((current, part) => current && current[part], item);
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return null;
+}
+
+function normalizeStabilityItems(payload) {
+  const roots = [payload, payload?.data, payload?.result, payload?.data?.data, payload?.result?.data];
+  for (const root of roots) {
+    if (Array.isArray(root)) return root;
+    if (!root || typeof root !== "object") continue;
+    for (const key of ["items", "list", "records", "channels", "channelMonitors", "channel_monitors"]) {
+      const value = root[key];
+      if (Array.isArray(value)) return value;
+      if (value && typeof value === "object") {
+        return Object.entries(value).map(([name, data]) => ({ name, ...(data || {}) }));
+      }
+    }
+  }
+  return [];
+}
+
+function normalizeStabilityItem(item) {
+  const timeline = firstStabilityValue(item, ["timeline", "history", "checks", "records", "data.timeline", "data.history"]);
+  let availability = firstStabilityValue(item, ["availability_7d", "availability7d", "availability", "uptime", "uptime_7d", "metrics.availability7d", "data.availability7d", "data.availability_7d"]);
+  if (typeof availability === "string") availability = Number.parseFloat(availability.replace("%", ""));
+  if (Number.isFinite(availability) && availability >= 0 && availability <= 1) availability *= 100;
+  let latency = firstStabilityValue(item, ["primary_latency_ms", "primaryLatencyMs", "latency_ms", "latencyMs", "latency", "metrics.latencyMs", "data.latencyMs", "data.primary_latency_ms"]);
+  if (latency && typeof latency === "object") latency = latency.ms ?? latency.value;
+  if (typeof latency === "string") latency = Number.parseFloat(latency);
+  return {
+    id: firstStabilityValue(item, ["id", "channel_id", "channelId", "channel.id", "data.id"]),
+    status: normalizeStabilityStatus(item),
+    availability7d: Number.isFinite(availability) ? availability : null,
+    latencyMs: Number.isFinite(latency) ? latency : null,
+    last60: summarizeTimeline(Array.isArray(timeline) ? timeline : timeline?.items || timeline?.records || []),
+  };
+}
+
+function stabilityStatusFromHealth(value) {
+  const status = String(value || "").toLowerCase();
+  if (/healthy|operational|ok|success/.test(status)) return "operational";
+  if (/warning|degrad/.test(status)) return "degraded";
+  if (/critical|failed|error|unhealthy/.test(status)) return "error";
+  return "unknown";
+}
+
+function normalizeGeiliV2Items(data) {
+  const items = Array.isArray(data?.data?.items) ? data.data.items : [];
+  return items.map((item) => {
+    const metrics = item.metrics || {};
+    const health = item.health || {};
+    const buckets = Array.isArray(item.buckets) ? item.buckets : [];
+    return {
+      name: item.group_name || item.name || `${item.platform || ""} ${item.group_id || ""}`.trim(),
+      id: item.group_id || item.id,
+      status: stabilityStatusFromHealth(health.overall),
+      availability7d: Number.isFinite(Number(metrics.success_rate)) ? Number(metrics.success_rate) * 100 : null,
+      latencyMs: Number.isFinite(Number(metrics.ttft?.p50_ms)) ? Number(metrics.ttft.p50_ms) : null,
+      last60: summarizeTimeline(buckets.map((bucket) => ({
+        status: stabilityStatusFromHealth(bucket.health?.overall),
+        latency_ms: bucket.metrics?.ttft?.p50_ms,
+      }))),
+    };
+  }).filter((item) => item.name);
 }
 
 function resolveRelayToken(relay) {
@@ -390,24 +553,33 @@ async function fetchStability(relayId, relay) {
       headers: { Authorization: `Bearer ${tk.token}` },
       signal: AbortSignal.timeout(15000),
     });
-    if (!res.ok) return stabilityFallback(relayId, `${relayId}_http_${res.status}`);
-    const data = await res.json();
-    const items = Array.isArray(data?.data?.items) ? data.data.items : [];
+    let items = [];
+    let legacyError = "";
+    if (res.ok) {
+      items = normalizeStabilityItems(await res.json());
+    } else {
+      legacyError = `${relayId}_http_${res.status}`;
+    }
+    // GeiliAPI moved channel health to channel-monitor-v2. Keep the legacy
+    // endpoint first for older relay installations, then use the new matrix.
+    if (!items.length && relay.type === "geiliapi") {
+      const v2 = await fetch(`${relay.baseURL}${relay.monitorV2Path || "/api/v1/channel-monitor-v2/matrix"}?range=7d`, {
+        headers: { Authorization: `Bearer ${tk.token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (v2.ok) items = normalizeGeiliV2Items(await v2.json());
+    }
     const channels = {};
     for (const it of items) {
-      channels[it.name] = {
-        id: it.id,
-        status: it.primary_status,
-        availability7d: it.availability_7d,
-        latencyMs: it.primary_latency_ms,
-        last60: summarizeTimeline(it.timeline),
-      };
+      const name = firstStabilityValue(it, ["name", "channel_name", "channelName", "title", "channel.name", "data.name"]);
+      if (!name) continue;
+      channels[name] = normalizeStabilityItem(it);
     }
     if (Object.keys(channels).length > 0) {
       saveStabilityCache(relayId, channels);
       return { ok: true, channels, count: Object.keys(channels).length };
     }
-    return stabilityFallback(relayId, `${relayId} returned no items`);
+    return stabilityFallback(relayId, legacyError || `${relayId} returned no items`);
   } catch {
     return stabilityFallback(relayId, "fetch failed");
   }
@@ -461,8 +633,13 @@ function buildState() {
 // Merged multi-relay view
 // ---------------------------------------------------------------------------
 
-function findStabilityChannel(stability, channel) {
-  if (!stability || !channel) return null;
+function findStabilityChannel(stability, priceGroup, channel) {
+  if (!stability) return null;
+  if (priceGroup !== undefined && priceGroup !== null) {
+    const idKey = Object.keys(stability).find((name) => stability[name]?.id !== undefined && stability[name]?.id !== null && String(stability[name].id) === String(priceGroup));
+    if (idKey !== undefined) return stability[idKey];
+  }
+  if (!channel) return null;
   if (stability[channel]) return stability[channel];
   const key = Object.keys(stability).find((name) => name.startsWith(channel) || channel.startsWith(name));
   return key ? stability[key] : null;
@@ -480,7 +657,7 @@ function agentValue(agent, priceTable, stability, providerMap) {
     price = { in: p.in, out: p.out, cache: p.cache, mult: p.mult, officialIn: p.officialIn, officialOut: p.officialOut, currency: p.currency || "USD" };
     groupName = mapping.groupName;
   }
-  const stable = mapping ? findStabilityChannel(stability, mapping.channel) : null;
+  const stable = mapping ? findStabilityChannel(stability, mapping.priceGroup, mapping.channel) : null;
   return { provider, modelId, price, groupName, stability: stable };
 }
 
@@ -504,6 +681,8 @@ async function buildMergedView() {
       stabilityNotes.push(`${relay.name}: ${stability.note}`);
     }
     relayPriceTables[relayId] = price.prices;
+    Object.assign(priceGroupNames, relay.priceGroupNames || {});
+    if (relay.type === "geiliapi") Object.assign(priceGroupNames, price.runtimeGroupNames || {});
     for (const [modelId, groups] of Object.entries(price.prices || {})) {
       if (!modelRelays[modelId]) modelRelays[modelId] = relayId;
       mergedPrices[modelId] = { ...(mergedPrices[modelId] || {}), ...groups };
@@ -513,9 +692,14 @@ async function buildMergedView() {
       mergedChannels[key] = data;
     }
     for (const [pid, mapping] of Object.entries(relay.providers || {})) {
-      providerMap[pid] = { ...mapping, relay: relayId };
+      providerMap[pid] = {
+        ...mapping,
+        groupName: relay.type === "geiliapi"
+          ? price.runtimeGroupNames?.[String(mapping.priceGroup)] || mapping.groupName
+          : mapping.groupName,
+        relay: relayId,
+      };
     }
-    Object.assign(priceGroupNames, relay.priceGroupNames || {});
   }
 
   const agents = state.agents.map((agent) => ({
@@ -901,7 +1085,8 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.provider || !body.model) throw new Error("provider and model are required");
-      const relayId = body.relay && CONFIG.relays[body.relay] ? body.relay : Object.keys(CONFIG.relays)[0];
+      if (!body.relay || !CONFIG.relays[body.relay]) throw new Error("relay is required");
+      const relayId = body.relay;
       const relay = CONFIG.relays[relayId];
       const result = deployModel(CONFIG.opencodeConfigPath, body.provider, body.model, {
         modelName: body.name,
@@ -916,16 +1101,19 @@ const server = http.createServer(async (req, res) => {
       // Model health with live pricing (stability needs a channel match and
       // stays "–" until the user maps one).
       if (result.ok) {
-        // If a matching key is saved for this relay, swap it into the provider
-        // whenever it still carries an {env:...} placeholder. Re-deploying an
-        // existing model therefore "heals" the key without manual editing.
+        // Keep API keys as {env:...} placeholders in opencode.jsonc.
         const resolvedKey = pickApiKey(relay, body.model, relayId);
         if (resolvedKey) {
           const keyResult = ensureProviderApiKey(CONFIG.opencodeConfigPath, body.provider, resolvedKey.key);
-          if (keyResult.changed) result.message += ` + API key [${resolvedKey.label}] embedded`;
+          if (keyResult.changed) result.message += ` + API key [${resolvedKey.label}] configured`;
         }
         const group = String(body.group || "default");
-        const mapping = { priceGroup: group, channel: "", groupName: relay.priceGroupNames?.[group] || group };
+        const existingMapping = relay.providers?.[body.provider] || {};
+        const mapping = {
+          priceGroup: group,
+          channel: body.channel || existingMapping.channel || "",
+          groupName: body.groupName || existingMapping.groupName || relay.priceGroupNames?.[group] || group,
+        };
         relay.providers = { ...(relay.providers || {}), [body.provider]: mapping };
         relay.priceGroupNames = { ...(relay.priceGroupNames || {}), [group]: mapping.groupName };
         try {

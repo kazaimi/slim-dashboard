@@ -121,7 +121,8 @@ function deployModel(filePath, providerId, modelId, opts = {}) {
       return { ok: false, error: `provider ${providerId} has no "models" block` };
     }
     const lineStart = raw.lastIndexOf("\n", braceIdx) + 1;
-    const indent = raw.slice(lineStart, braceIdx).replace(/\{/, "") + "  ";
+    const lineIndent = raw.slice(lineStart, braceIdx).match(/^\s*/)?.[0] || "";
+    const indent = lineIndent + "  ";
     const block = "\n" + buildModelBlock(modelId, { ...opts, indent });
     updated = raw.slice(0, braceIdx + 1) + block + raw.slice(braceIdx + 1);
   } else {
@@ -151,11 +152,11 @@ function deployModel(filePath, providerId, modelId, opts = {}) {
 }
 
 /**
- * If a deployed provider still carries an {env:...} apiKey placeholder and a
- * real key is now available (saved per-relay), swap it in so the provider
- * actually authenticates. Never touches literal keys.
+ * Keep the provider's {env:...} apiKey placeholder intact. The key is
+ * resolved at runtime and must not be written to opencode.jsonc.
  */
 function ensureProviderApiKey(filePath, providerId, apiKey) {
+  return { changed: false };
   if (!apiKey) return { changed: false };
   if (!fs.existsSync(filePath)) return { changed: false };
   const raw = fs.readFileSync(filePath, "utf8");

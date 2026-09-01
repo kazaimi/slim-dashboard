@@ -35,7 +35,7 @@
       "providers": {
         "geili_openai": { "priceGroup": "27", "channel": "GPT 给力 Pro", "groupName": "GPT 给力 Pro" },
         "geili_grok": { "priceGroup": "heavy", "channel": "Grok（Heavy）", "groupName": "Grok Heavy" },
-        "geili_guomo": { "priceGroup": "82", "channel": "国模综合", "groupName": "国模综合" },
+        "geili_chaosuan": { "priceGroup": "87", "channel": "DS/Qwen-超算", "groupName": "DS/Qwen-超算" },
         "geili_deepseek_flash": { "priceGroup": "flash-low", "channel": "福利 Flash", "groupName": "福利 Flash" },
         "geili_api": { "priceGroup": "47", "channel": "CC-kiro", "groupName": "CC-Kiro" },
         "geili_gemini": { "priceGroup": "41", "channel": "Gemini", "groupName": "Gemini" }
@@ -48,16 +48,21 @@
         "47": "CC-Kiro",
         "67": "Grok",
         "80": "Pro 更稳定",
-        "82": "国模综合",
+        "87": "DS/Qwen-超算",
         "heavy": "Grok Heavy",
         "flash-low": "福利 Flash"
       },
       "overrides": [
         {
           "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
-          "group": "82",
+          "group": "87",
           "useOfficial": true,
           "currency": "CNY"
+        },
+        {
+          "models": ["*"],
+          "group": "87",
+          "multiplier": 0.25
         },
         {
           "models": ["gpt-*"],
@@ -77,7 +82,7 @@
         {
           "id": "flash-low",
           "name": "福利 Flash",
-          "baseGroup": "82",
+          "baseGroup": "87",
           "models": ["deepseek-v4-flash"],
           "multiplier": 0.01,
           "currency": "CNY",
