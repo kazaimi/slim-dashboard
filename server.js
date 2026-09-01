@@ -133,7 +133,10 @@ process.on("unhandledRejection", (e) => {
 // Relay panels change ratios/groups server-side without notice; drop cached
 // price tables periodically so the dashboard self-corrects within minutes.
 const PRICE_REFRESH_MS = 10 * 60 * 1000;
-setInterval(() => priceCaches.clear(), PRICE_REFRESH_MS).unref?.();
+setInterval(() => {
+  priceCaches.clear();
+  usageCaches.clear();
+}, PRICE_REFRESH_MS).unref?.();
 
 // ---------------------------------------------------------------------------
 // Generic helpers
@@ -227,6 +230,103 @@ function applySyntheticGroups(prices, syntheticGroups) {
 }
 
 const priceCaches = new Map(); // relayId -> { table, source }
+const usageCaches = new Map(); // relayId -> { data, promise }
+
+function emptyUsage() {
+  return { ok: false, source: "none", models: {}, count: 0 };
+}
+
+function usagePrice(cost, tokens, rateMultiplier) {
+  const numericCost = Number(cost);
+  const numericTokens = Number(tokens);
+  if (!Number.isFinite(numericCost) || !Number.isFinite(numericTokens) || numericTokens <= 0) return null;
+  const basePrice = numericCost / numericTokens * 1e6;
+  const multiplier = Number(rateMultiplier);
+  return {
+    base: basePrice,
+    actual: basePrice * (Number.isFinite(multiplier) ? multiplier : 1),
+  };
+}
+
+function aggregateGeiliUsage(items) {
+  const models = {};
+  for (const item of items) {
+    if (!item || item.model == null || String(item.model) === "") continue;
+    const model = String(item.model);
+    const existing = models[model];
+    const requests = Number(item.requests);
+    const actualCost = Number(item.actual_cost);
+    const totalCost = Number(item.total_cost);
+    const inputPrice = usagePrice(item.input_cost, item.input_tokens, item.rate_multiplier);
+    const outputPrice = usagePrice(item.output_cost, item.output_tokens, item.rate_multiplier);
+    if (!existing) {
+      models[model] = {
+        model,
+        group_id: item.group_id == null ? null : item.group_id,
+        group: { name: item.group?.name == null ? null : String(item.group.name) },
+        rate_multiplier: item.rate_multiplier == null ? null : item.rate_multiplier,
+        actual_cost: item.actual_cost == null ? null : item.actual_cost,
+        total_cost: item.total_cost == null ? null : item.total_cost,
+        input_price: inputPrice?.actual ?? null,
+        output_price: outputPrice?.actual ?? null,
+        base_input_price: inputPrice?.base ?? null,
+        base_output_price: outputPrice?.base ?? null,
+        created_at: item.created_at == null ? null : item.created_at,
+        requests: Number.isFinite(requests) ? requests : 1,
+        sumActualCost: Number.isFinite(actualCost) ? actualCost : 0,
+        sumTotalCost: Number.isFinite(totalCost) ? totalCost : 0,
+      };
+      continue;
+    }
+    existing.requests += Number.isFinite(requests) ? requests : 1;
+    if (Number.isFinite(actualCost)) existing.sumActualCost += actualCost;
+    if (Number.isFinite(totalCost)) existing.sumTotalCost += totalCost;
+    const currentTime = Date.parse(existing.created_at || "") || 0;
+    const itemTime = Date.parse(item.created_at || "") || 0;
+    if (itemTime >= currentTime) {
+      existing.group_id = item.group_id == null ? null : item.group_id;
+      existing.group = { name: item.group?.name == null ? null : String(item.group.name) };
+      existing.rate_multiplier = item.rate_multiplier == null ? null : item.rate_multiplier;
+      existing.actual_cost = item.actual_cost == null ? null : item.actual_cost;
+      existing.total_cost = item.total_cost == null ? null : item.total_cost;
+      existing.input_price = inputPrice?.actual ?? null;
+      existing.output_price = outputPrice?.actual ?? null;
+      existing.base_input_price = inputPrice?.base ?? null;
+      existing.base_output_price = outputPrice?.base ?? null;
+      existing.created_at = item.created_at == null ? null : item.created_at;
+    }
+  }
+  return { ok: Object.keys(models).length > 0, source: "live", models, count: Object.keys(models).length };
+}
+
+async function fetchGeiliUsage(relay) {
+  if (relay.type !== "geiliapi") return emptyUsage();
+  const token = resolveRelayToken(relay);
+  if (!token) return emptyUsage();
+  try {
+    const res = await fetch(`${relay.baseURL}/api/v1/usage?page=1&page_size=100`, {
+      headers: { Authorization: `Bearer ${token.token}` },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) return emptyUsage();
+    const payload = await res.json();
+    return aggregateGeiliUsage(Array.isArray(payload?.data?.items) ? payload.data.items : []);
+  } catch {
+    return emptyUsage();
+  }
+}
+
+async function loadUsageData(relayId, relay) {
+  const cached = usageCaches.get(relayId);
+  if (cached?.data) return cached.data;
+  if (cached?.promise) return cached.promise;
+  const promise = fetchGeiliUsage(relay).then((data) => {
+    usageCaches.set(relayId, { data });
+    return data;
+  });
+  usageCaches.set(relayId, { promise });
+  return promise;
+}
 
 async function fetchAvailableGroups(relay) {
   const token = resolveRelayToken(relay);
@@ -645,7 +745,7 @@ function findStabilityChannel(stability, priceGroup, channel) {
   return key ? stability[key] : null;
 }
 
-function agentValue(agent, priceTable, stability, providerMap) {
+function agentValue(agent, priceTable, stability, providerMap, usageModels) {
   const slash = agent.model.indexOf("/");
   const provider = slash === -1 ? "" : agent.model.slice(0, slash);
   const modelId = slash === -1 ? agent.model : agent.model.slice(slash + 1);
@@ -657,8 +757,49 @@ function agentValue(agent, priceTable, stability, providerMap) {
     price = { in: p.in, out: p.out, cache: p.cache, mult: p.mult, officialIn: p.officialIn, officialOut: p.officialOut, currency: p.currency || "USD" };
     groupName = mapping.groupName;
   }
+  const usage = usageModels?.[modelId];
+  const inputPrice = Number(usage?.input_price);
+  const outputPrice = Number(usage?.output_price);
+  if (
+    price &&
+    usage &&
+    String(mapping?.priceGroup) === String(usage.group_id) &&
+    Number.isFinite(inputPrice) &&
+    Number.isFinite(outputPrice)
+  ) {
+    price.in = usage.input_price;
+    price.out = usage.output_price;
+    price.mult = usage.rate_multiplier == null ? null : String(usage.rate_multiplier);
+  }
   const stable = mapping ? findStabilityChannel(stability, mapping.priceGroup, mapping.channel) : null;
   return { provider, modelId, price, groupName, stability: stable };
+}
+
+function mergeUsageModels(target, models) {
+  for (const [model, item] of Object.entries(models || {})) {
+    const existing = target[model];
+    if (!existing) {
+      target[model] = { ...item, group: item.group ? { name: item.group.name } : { name: null } };
+      continue;
+    }
+    existing.requests += Number(item.requests) || 0;
+    existing.sumActualCost += Number(item.sumActualCost) || 0;
+    existing.sumTotalCost += Number(item.sumTotalCost) || 0;
+    const currentTime = Date.parse(existing.created_at || "") || 0;
+    const itemTime = Date.parse(item.created_at || "") || 0;
+    if (itemTime >= currentTime) {
+      existing.group_id = item.group_id;
+      existing.group = item.group ? { name: item.group.name } : { name: null };
+      existing.rate_multiplier = item.rate_multiplier;
+      existing.actual_cost = item.actual_cost;
+      existing.total_cost = item.total_cost;
+      existing.input_price = item.input_price;
+      existing.output_price = item.output_price;
+      existing.base_input_price = item.base_input_price;
+      existing.base_output_price = item.base_output_price;
+      existing.created_at = item.created_at;
+    }
+  }
 }
 
 async function buildMergedView() {
@@ -670,11 +811,15 @@ async function buildMergedView() {
   const priceSources = [];
   const stabilityNotes = [];
   const modelRelays = {};
+  const usageModels = {};
+  let usageLive = false;
   const relayPriceTables = {};
   let stabilityFromCache = false;
 
   for (const [relayId, relay] of Object.entries(CONFIG.relays)) {
-    const [price, stability] = await Promise.all([fetchPriceData(relayId, relay), fetchStability(relayId, relay)]);
+    const [price, stability, usage] = await Promise.all([fetchPriceData(relayId, relay), fetchStability(relayId, relay), loadUsageData(relayId, relay)]);
+    if (usage.source === "live") usageLive = true;
+    mergeUsageModels(usageModels, usage.models);
     priceSources.push(`${relay.name}:${price.source}(${price.count})`);
     if (stability.fromCache) {
       stabilityFromCache = true;
@@ -704,13 +849,19 @@ async function buildMergedView() {
 
   const agents = state.agents.map((agent) => ({
     ...agent,
-    ...agentValue(agent, mergedPrices, mergedChannels, providerMap),
+    ...agentValue(agent, mergedPrices, mergedChannels, providerMap, usageModels),
   }));
 
   const stability = {
     ok: Object.keys(mergedChannels).length > 0 || stabilityNotes.length > 0,
     channels: mergedChannels,
     count: Object.keys(mergedChannels).length,
+  };
+  const usage = {
+    ok: usageLive && Object.keys(usageModels).length > 0,
+    source: usageLive ? "live" : "none",
+    models: usageModels,
+    count: Object.keys(usageModels).length,
   };
   if (stabilityFromCache) {
     stability.fromCache = true;
@@ -727,6 +878,7 @@ async function buildMergedView() {
     agents,
     price: { ok: Object.keys(mergedPrices).length > 0, prices: mergedPrices, source: priceSources.join(","), count: Object.keys(mergedPrices).length },
     stability,
+    usage,
     providerMap,
     priceGroupNames,
     modelRelays,
@@ -1107,12 +1259,17 @@ const server = http.createServer(async (req, res) => {
           const keyResult = ensureProviderApiKey(CONFIG.opencodeConfigPath, body.provider, resolvedKey.key);
           if (keyResult.changed) result.message += ` + API key [${resolvedKey.label}] configured`;
         }
-        const group = String(body.group || "default");
         const existingMapping = relay.providers?.[body.provider] || {};
+        const hasExistingMapping = Boolean(relay.providers && Object.prototype.hasOwnProperty.call(relay.providers, body.provider));
+        const hasGroup = body.group !== undefined && body.group !== null && String(body.group).trim() !== "";
+        const hasGroupName = body.groupName !== undefined && body.groupName !== null && String(body.groupName).trim() !== "";
+        const group = hasGroup ? String(body.group) : (hasExistingMapping ? existingMapping.priceGroup : "default");
         const mapping = {
           priceGroup: group,
           channel: body.channel || existingMapping.channel || "",
-          groupName: body.groupName || existingMapping.groupName || relay.priceGroupNames?.[group] || group,
+          groupName: hasGroupName
+            ? body.groupName
+            : (hasExistingMapping ? existingMapping.groupName : relay.priceGroupNames?.[group] || group),
         };
         relay.providers = { ...(relay.providers || {}), [body.provider]: mapping };
         relay.priceGroupNames = { ...(relay.priceGroupNames || {}), [group]: mapping.groupName };

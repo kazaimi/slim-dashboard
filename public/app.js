@@ -163,8 +163,12 @@ function getProviderId(modelReference) {
   return slashIndex === -1 ? "" : modelReference.slice(0, slashIndex);
 }
 
-function findStabilityChannel(stability, channel) {
+function findStabilityChannel(stability, priceGroup, channel) {
   if (!stability || !channel) return null;
+  if (priceGroup != null) {
+    const item = Object.values(stability).find((entry) => entry && typeof entry === "object" && String(entry.id) === String(priceGroup));
+    if (item) return item;
+  }
   if (stability[channel]) return stability[channel];
   const key = Object.keys(stability).find((name) => name.startsWith(channel) || channel.startsWith(name));
   return key ? stability[key] : null;
@@ -174,31 +178,56 @@ function computeAgentValue(modelReference) {
   const provider = getProviderId(modelReference);
   const modelId = getModelId(modelReference);
   const mapping = dashboardState?.providerMap?.[provider];
+  const groupId = mapping ? getSelectedGroup(provider, modelId, mapping) : null;
   let price = null;
   let groupName = null;
   if (mapping) {
-    const groupId = getSelectedGroup(provider, modelId, mapping);
     const p = dashboardState?.price?.prices?.[modelId]?.[groupId];
     if (p && p.in != null) {
       price = { in: p.in, out: p.out, cache: p.cache, mult: p.mult, officialIn: p.officialIn, officialOut: p.officialOut, currency: p.currency || "USD", tiered: p.tiered };
       groupName = `${mapping.groupName} / group ${groupId}`;
+
+      const usage = dashboardState?.usage?.models?.[modelId];
+      const usageInput = usage?.input_price;
+      const usageOutput = usage?.output_price;
+      const usageMatchesGroup = usage?.group_id != null && groupId != null && String(usage.group_id) === String(groupId);
+      const hasUsagePrices = usageInput !== null && usageInput !== undefined && usageInput !== ""
+        && usageOutput !== null && usageOutput !== undefined && usageOutput !== ""
+        && Number.isFinite(Number(usageInput)) && Number.isFinite(Number(usageOutput));
+      if (usageMatchesGroup && hasUsagePrices) {
+        const rawUsageGroup = usage.group ?? usage.actual_group;
+        const usageGroup = rawUsageGroup && typeof rawUsageGroup === "object"
+          ? rawUsageGroup.name || rawUsageGroup.group_name || rawUsageGroup.id
+          : usage.group_name || rawUsageGroup || usage.group_id;
+        price.in = usageInput;
+        price.out = usageOutput;
+        price.mult = usage.multiplier ?? usage.rate_multiplier ?? usage.mult;
+        price.currency = usage.currency || price.currency || "USD";
+        groupName = `${mapping.groupName} / Usage group ${usageGroup || usage.group_id}`;
+      }
     }
   }
-  const stability = mapping ? findStabilityChannel(dashboardState?.stability?.channels, mapping.channel) : null;
+  const stability = mapping ? findStabilityChannel(dashboardState?.stability?.channels, groupId, mapping.channel) : null;
   return { provider, modelId, price, groupName, stability };
+}
+
+function formatDecimal(value) {
+  if (value === null || value === undefined || value === "") return "\u2013";
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(2) : String(value);
 }
 
 function formatPrice(price) {
   if (!price || price.in == null) return "\u2013";
   const cur = price.currency === "CNY" ? "\u00a5" : "$";
-  return `${cur}${price.in} / ${cur}${price.out}`;
+  return `In ${cur}${formatDecimal(price.in)} / Out ${cur}${formatDecimal(price.out)}`;
 }
 
 function priceTitle(price, groupName) {
   if (!price) return "No price available";
   const cur = price.currency === "CNY" ? "\u00a5" : "$";
   const tierNote = price.tiered ? " | 分档计费，此处为基础档（超出长度阈值后单价上浮）" : "";
-  return `Multiplier \u00d7${price.mult ?? "\u2013"} \u2014 In ${cur}${price.in} / Out ${cur}${price.out} / Cache ${cur}${price.cache !== null && price.cache !== undefined ? price.cache : "\u2013"} per 1M tokens (group ${groupName || ""}, ${price.currency || "USD"})${tierNote}`;
+  return `Multiplier \u00d7${formatDecimal(price.mult)} \u2014 In ${cur}${formatDecimal(price.in)} / Out ${cur}${formatDecimal(price.out)} / Cache ${cur}${formatDecimal(price.cache)} per 1M tokens (group ${groupName || ""}, ${price.currency || "USD"})${tierNote}`;
 }
 
 function priceTier(price) {
@@ -237,6 +266,84 @@ function createPricePill(price) {
   if (tier) pill.classList.add(`price-pill--${tier}`);
   pill.textContent = formatPrice(price);
   return pill;
+}
+
+function usageValue(usage, keys) {
+  for (const key of keys) {
+    if (usage && usage[key] !== null && usage[key] !== undefined && usage[key] !== "") return usage[key];
+  }
+  return null;
+}
+
+function formatUsageValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value.toLocaleString();
+  return String(value);
+}
+
+function formatUsagePrice(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  return `$${Number.isFinite(numeric) ? numeric.toFixed(2) : String(value)}/M`;
+}
+
+function formatUsageMultiplier(value) {
+  if (value === null || value === undefined || value === "") return null;
+  return formatDecimal(value);
+}
+
+function createUsageSummary(usage) {
+  if (!usage || typeof usage !== "object") return null;
+
+  const recent = usage.recent && typeof usage.recent === "object"
+    ? usage.recent
+    : usage.latest && typeof usage.latest === "object" ? usage.latest : usage;
+  const rawGroup = usageValue(usage, ["actual_group", "actualGroup", "group"]);
+  const group = formatUsageValue(
+    rawGroup && typeof rawGroup === "object"
+      ? rawGroup.name || rawGroup.group_name || rawGroup.id
+      : rawGroup
+  );
+  const inputPrice = formatUsagePrice(
+    usageValue(usage, ["actual_input_price", "input_price"])
+  );
+  const outputPrice = formatUsagePrice(
+    usageValue(usage, ["actual_output_price", "output_price"])
+  );
+  const multiplier = formatUsageMultiplier(
+    usageValue(usage, ["rate_multiplier", "multiplier", "mult"])
+  );
+  const actualCost = formatUsageValue(usageValue(recent, ["actual_cost", "actualCost"]));
+  const totalCost = formatUsageValue(usageValue(recent, ["total_cost", "totalCost"]));
+  const requests = formatUsageValue(usageValue(recent, ["requests", "request_count", "requestCount"]));
+  const values = [];
+
+  if (group !== null) values.push(["实际", group]);
+  const pricing = [];
+  if (inputPrice !== null) pricing.push(`输入 ${inputPrice}`);
+  if (outputPrice !== null) pricing.push(`输出 ${outputPrice}`);
+  if (multiplier !== null) pricing.push(`×${multiplier}`);
+  if (pricing.length > 0) values.push(["价格", pricing.join(" · "), "pricing"]);
+  if (actualCost !== null || totalCost !== null) values.push(["近成本", `${actualCost ?? "–"} / ${totalCost ?? "–"}`]);
+  if (requests !== null) values.push(["请求", requests]);
+  if (values.length === 0) return null;
+
+  const summary = document.createElement("div");
+  summary.className = "usage-summary";
+  for (const [label, value, variant] of values) {
+    const item = document.createElement("span");
+    item.className = "usage-summary__item";
+    if (variant) item.classList.add(`usage-summary__item--${variant}`);
+    const labelNode = document.createElement("span");
+    labelNode.className = "usage-summary__label";
+    labelNode.textContent = label;
+    const valueNode = document.createElement("span");
+    valueNode.className = "usage-summary__value";
+    valueNode.textContent = value;
+    item.append(labelNode, valueNode);
+    summary.append(item);
+  }
+  return summary;
 }
 
 function updateRowPrice(row, modelReference) {
@@ -428,7 +535,7 @@ async function deployModelToOpencode(providerId, modelId, relay) {
   }
 }
 
-function createGeiliRow(provider, model) {
+function createGeiliRow(provider, model, state) {
   const row = document.createElement("tr");
   row.className = "geili-row";
 
@@ -444,8 +551,8 @@ function createGeiliRow(provider, model) {
   const groupCell = document.createElement("td");
   const ref = `${provider.id}/${model.id}`;
   const value = computeAgentValue(ref);
-  const groups = dashboardState?.price?.prices?.[model.id] || {};
-  const mapping = dashboardState?.providerMap?.[provider.id];
+  const groups = state?.price?.prices?.[model.id] || {};
+  const mapping = state?.providerMap?.[provider.id];
   const groupSelect = document.createElement("select");
   groupSelect.className = "group-select";
   groupSelect.setAttribute("aria-label", `Price group for ${model.name || model.id}`);
@@ -464,6 +571,8 @@ function createGeiliRow(provider, model) {
   const pill = createPricePill(value.price);
   if (pill) priceCell.append(pill);
   else priceCell.textContent = formatPrice(value.price);
+  const usageSummary = createUsageSummary(state?.usage?.models?.[model.id]);
+  if (usageSummary) priceCell.append(usageSummary);
   priceCell.title = priceTierTitle(value.price, value.groupName);
 
   const stabilityCell = document.createElement("td");
@@ -471,7 +580,7 @@ function createGeiliRow(provider, model) {
 
   const actionCell = document.createElement("td");
   actionCell.className = "action-column";
-  const isDeployed = deployedModelRefs(dashboardState).has(`${provider.id}/${model.id}`);
+  const isDeployed = deployedModelRefs(state).has(`${provider.id}/${model.id}`);
   if (!isDeployed) {
     const deployBtn = document.createElement("button");
     deployBtn.type = "button";
@@ -505,7 +614,7 @@ function renderGeiliModels(state) {
   for (const provider of state.providers || []) {
     if (!state.providerMap?.[provider.id]) continue;
     for (const model of provider.models || []) {
-      rows.push(createGeiliRow(provider, model));
+      rows.push(createGeiliRow(provider, model, state));
     }
   }
   elements.geiliModelBody.replaceChildren(...rows);
