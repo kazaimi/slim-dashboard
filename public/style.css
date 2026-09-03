@@ -416,11 +416,20 @@ tbody tr:last-child td {
 }
 
 .agent-column {
-  width: 27%;
+  width: 18%;
+}
+
+#tableFrame thead th:nth-child(3),
+#tableFrame tbody td:nth-child(3) {
+  width: 25%;
+}
+
+.effort-column {
+  width: 12%;
 }
 
 .price-column {
-  width: 20%;
+  width: 18%;
   text-align: right;
   white-space: normal;
 }
@@ -467,29 +476,36 @@ tbody .price-column {
 }
 
 .stability-column {
-  width: 22%;
+  width: 21%;
   text-align: left;
-  white-space: nowrap;
-}
-
-tbody .stability-column {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
+  white-space: normal;
 }
 
 .stable-top {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.stable-badge,
+.stable-avail,
+.stable-meta {
+  white-space: nowrap;
 }
 
 .stable-last60 {
+  display: block;
+  margin-top: 4px;
   color: #8894a4;
   font-family: var(--font-mono);
   font-size: 11px;
-  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: break-word;
+  white-space: normal;
 }
 
 .stable-badge {
@@ -662,6 +678,55 @@ tbody .stability-column {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+.effort-select {
+  width: 100%;
+  height: 32px;
+  padding: 0 25px 0 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--text-muted);
+  background: #0b0e12;
+  appearance: none;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
+}
+
+.effort-select-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.effort-select-wrap::after {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  width: 5px;
+  height: 5px;
+  border-right: 1px solid #768191;
+  border-bottom: 1px solid #768191;
+  content: "";
+  pointer-events: none;
+  transform: translateY(-70%) rotate(45deg);
+}
+
+.effort-select:hover,
+.effort-select:focus {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.effort-select:focus {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.effort-select option {
+  color: var(--text);
+  background: var(--surface-raised);
+}
+
 .group-select {
   width: 100%;
   min-width: 76px;
@@ -690,6 +755,51 @@ tbody .stability-column {
 .action-column {
   width: 84px;
   text-align: center;
+}
+
+#healthFrame thead th:nth-child(1),
+#healthFrame tbody td:nth-child(1) {
+  width: 27%;
+}
+
+#healthFrame thead th:nth-child(2),
+#healthFrame tbody td:nth-child(2) {
+  width: 23%;
+}
+
+#healthFrame thead th:nth-child(3),
+#healthFrame tbody td:nth-child(3) {
+  width: 18%;
+}
+
+#healthFrame thead th:nth-child(4),
+#healthFrame tbody td:nth-child(4) {
+  width: 22%;
+}
+
+#healthFrame th,
+#healthFrame td {
+  padding-right: 16px;
+  padding-left: 16px;
+}
+
+#healthFrame td {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  vertical-align: middle;
+}
+
+#healthFrame .price-pill {
+  white-space: nowrap;
+}
+
+#healthFrame .usage-summary {
+  gap: 4px;
+  margin-top: 8px;
+}
+
+#healthFrame .usage-summary__value {
+  overflow-wrap: break-word;
 }
 
 .deploy-btn {
@@ -1371,11 +1481,24 @@ tbody .stability-column {
   }
 
   .agent-column {
-    width: 24%;
+    width: 18%;
+  }
+
+  #tableFrame thead th:nth-child(3),
+  #tableFrame tbody td:nth-child(3) {
+    width: 25%;
+  }
+
+  .effort-column {
+    width: 12%;
   }
 
   .price-column {
-    width: 14%;
+    width: 18%;
+  }
+
+  .stability-column {
+    width: 21%;
   }
 
   th,
@@ -1415,6 +1538,10 @@ tbody .stability-column {
 
   table {
     min-width: 690px;
+  }
+
+  #tableFrame table {
+    min-width: 880px;
   }
 
   .table-footer {

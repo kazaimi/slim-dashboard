@@ -232,6 +232,43 @@ function applySyntheticGroups(prices, syntheticGroups) {
 const priceCaches = new Map(); // relayId -> { table, source }
 const usageCaches = new Map(); // relayId -> { data, promise }
 
+function readPriceFallback(relayId) {
+  const fbPath = path.join(CONFIG.dataDir, `price-fallback${relayId === "geiliapi" ? "" : "-" + relayId}.json`);
+  try {
+    const fallback = JSON.parse(fs.readFileSync(fbPath, "utf8"));
+    return fallback && typeof fallback === "object" ? fallback : {};
+  } catch {
+    return {};
+  }
+}
+
+function isValidPriceValue(value) {
+  return value !== null && value !== undefined && String(value).trim() !== "" && Number.isFinite(Number(value));
+}
+
+function mergePriceTables(live, fallback) {
+  const merged = structuredClone(live || {});
+  for (const [modelId, fallbackGroups] of Object.entries(fallback || {})) {
+    if (!fallbackGroups || typeof fallbackGroups !== "object") continue;
+    if (!merged[modelId] || typeof merged[modelId] !== "object") merged[modelId] = {};
+    for (const [groupId, fallbackEntry] of Object.entries(fallbackGroups)) {
+      if (!fallbackEntry || typeof fallbackEntry !== "object") continue;
+      const liveEntry = merged[modelId][groupId];
+      if (!liveEntry || typeof liveEntry !== "object") {
+        merged[modelId][groupId] = structuredClone(fallbackEntry);
+        continue;
+      }
+      const entry = { ...fallbackEntry, ...liveEntry };
+      if (isValidPriceValue(liveEntry.in)) entry.in = liveEntry.in;
+      else if (isValidPriceValue(fallbackEntry.in)) entry.in = fallbackEntry.in;
+      if (isValidPriceValue(liveEntry.out)) entry.out = liveEntry.out;
+      else if (isValidPriceValue(fallbackEntry.out)) entry.out = fallbackEntry.out;
+      merged[modelId][groupId] = entry;
+    }
+  }
+  return merged;
+}
+
 function emptyUsage() {
   return { ok: false, source: "none", models: {}, count: 0 };
 }
@@ -471,19 +508,17 @@ async function loadPriceTable(relayId, relay) {
       if (!res.ok) continue;
       const parsed = parseGeiliBundle(await res.text());
       if (Object.keys(parsed).length > 0) {
-        priceCaches.set(relayId, { table: parsed, source: "live" });
+        const table = mergePriceTables(parsed, readPriceFallback(relayId));
+        priceCaches.set(relayId, { table, source: "live" });
         return priceCaches.get(relayId);
       }
     } catch {}
   }
-  const fbPath = path.join(CONFIG.dataDir, `price-fallback${relayId === "geiliapi" ? "" : "-" + relayId}.json`);
-  try {
-    const fb = JSON.parse(fs.readFileSync(fbPath, "utf8"));
-    if (Object.keys(fb).length > 0) {
-      priceCaches.set(relayId, { table: fb, source: "fallback" });
-      return priceCaches.get(relayId);
-    }
-  } catch {}
+  const fb = readPriceFallback(relayId);
+  if (Object.keys(fb).length > 0) {
+    priceCaches.set(relayId, { table: fb, source: "fallback" });
+    return priceCaches.get(relayId);
+  }
   priceCaches.set(relayId, { table: {}, source: "none" });
   return priceCaches.get(relayId);
 }
@@ -712,7 +747,10 @@ function providerInventory() {
   for (const [pid, p] of Object.entries(provs)) {
     const models = [];
     for (const [mid, m] of Object.entries(p.models || {})) {
-      models.push({ id: mid, name: m?.name || mid, limit: m?.limit || null });
+      const variants = m?.variants && typeof m.variants === "object" && !Array.isArray(m.variants)
+        ? Object.keys(m.variants)
+        : [];
+      models.push({ id: mid, name: m?.name || mid, limit: m?.limit || null, variants });
     }
     providers.push({ id: pid, name: p?.name || pid, baseURL: p?.options?.baseURL || "", models });
   }
@@ -721,11 +759,33 @@ function providerInventory() {
 
 const AGENT_ORDER = ["orchestrator", "oracle", "librarian", "explorer", "designer", "fixer", "council", "observer"];
 
+function normalizeEffort(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+// Variants declared for a provider/model in opencode.jsonc. Saving an effort
+// is only accepted when the target model actually declares that variant.
+function modelVariantsFor(modelReference) {
+  const slash = String(modelReference || "").indexOf("/");
+  if (slash === -1) return [];
+  const providerId = modelReference.slice(0, slash);
+  const modelId = modelReference.slice(slash + 1);
+  const model = readOpencodeConfig()?.provider?.[providerId]?.models?.[modelId];
+  if (!model?.variants || typeof model.variants !== "object" || Array.isArray(model.variants)) return [];
+  return Object.keys(model.variants).filter((key) => typeof key === "string" && key.trim());
+}
+
 function buildState() {
   const slim = readSlim();
   const presetName = slim?.default_preset || "mixed";
   const preset = slim?.presets?.[presetName] || {};
-  const agents = AGENT_ORDER.map((name) => ({ name, model: preset[name]?.model || "" }));
+  const agents = AGENT_ORDER.map((name) => {
+    const config = preset[name] || {};
+    const effort = Object.prototype.hasOwnProperty.call(config, "variant")
+      ? config.variant
+      : config.effort;
+    return { name, model: config.model || "", effort: normalizeEffort(effort) };
+  });
   return { presetName, agents, providers: providerInventory() };
 }
 
@@ -912,6 +972,18 @@ function saveAgents(agents) {
   for (const a of agents) {
     slim.presets[presetName][a.name] ??= {};
     slim.presets[presetName][a.name].model = a.model;
+    const effort = normalizeEffort(a.effort);
+    const declared = modelVariantsFor(a.model);
+    const valid = effort === "" || declared.some((key) => key.toLowerCase() === effort);
+    if (valid && effort) {
+      slim.presets[presetName][a.name].variant = declared.find((key) => key.toLowerCase() === effort) || effort;
+      delete slim.presets[presetName][a.name].effort;
+    } else {
+      // Invalid/un-declared effort is dropped rather than written, so OpenCode
+      // never receives a variant the target model cannot resolve.
+      delete slim.presets[presetName][a.name].variant;
+      delete slim.presets[presetName][a.name].effort;
+    }
   }
   fs.writeFileSync(CONFIG.slimConfigPath, JSON.stringify(slim, null, 2) + "\n", "utf8");
   return { ok: true, presetName };

@@ -55,6 +55,7 @@ const elements = {
 
 let dashboardState = null;
 let loadedModels = new Map();
+let loadedEfforts = new Map();
 let loadedOrder = [];
 let draggedRow = null;
 let toastTimer = null;
@@ -131,8 +132,9 @@ function isDirty() {
   if (!dashboardState) return false;
   const agents = getCurrentAgents();
   const modelsChanged = agents.some((agent) => loadedModels.get(agent.name) !== agent.model);
+  const effortsChanged = agents.some((agent) => loadedEfforts.get(agent.name) !== agent.effort);
   const orderChanged = agents.some((agent, index) => loadedOrder[index] !== agent.name);
-  return modelsChanged || orderChanged;
+  return modelsChanged || effortsChanged || orderChanged;
 }
 
 function updateDirtyState() {
@@ -142,7 +144,11 @@ function updateDirtyState() {
 
   elements.tableBody.querySelectorAll(".agent-row").forEach((row) => {
     const select = row.querySelector(".model-select");
-    row.classList.toggle("is-modified", loadedModels.get(row.dataset.agent) !== select.value);
+    const effortSelect = row.querySelector(".effort-select");
+    row.classList.toggle(
+      "is-modified",
+      loadedModels.get(row.dataset.agent) !== select.value || loadedEfforts.get(row.dataset.agent) !== effortSelect.value
+    );
   });
 }
 
@@ -150,6 +156,7 @@ function getCurrentAgents() {
   return Array.from(elements.tableBody.querySelectorAll(".agent-row")).map((row) => ({
     name: row.dataset.agent,
     model: row.querySelector(".model-select").value,
+    effort: row.querySelector(".effort-select").value,
   }));
 }
 
@@ -384,7 +391,8 @@ function updateRowStability(row, stability) {
 
   const top = document.createElement("div");
   top.className = "stable-top";
-  top.append(status, avail, meta);
+  top.append(status, avail);
+  if (meta.textContent) top.append(meta);
   cell.append(top);
 
   cell.title = `Status: ${stability.status || "unknown"}  |  7-day availability: ${pct != null ? Number(pct).toFixed(2) + "%" : "\u2013"}  |  Latency: ${lat != null && lat < 30000 ? Math.round(lat).toLocaleString() + "ms" : "n/a"}`;
@@ -396,7 +404,9 @@ function updateRowStability(row, stability) {
     const err = c.error || 0;
     const last = document.createElement("div");
     last.className = "stable-last60";
-    last.textContent = `Last 60: ${op} ok / ${deg} degraded / ${err} error`;
+    last.textContent = op === 0 && deg === 0 && err === 0
+      ? "No recent checks"
+      : `Last 60: ${op} ok / ${deg} degraded / ${err} error`;
     cell.append(last);
     cell.title += `\nLast 60 checks: ${op} ok, ${deg} degraded, ${err} error`;
   }
@@ -438,6 +448,60 @@ function createModelSelect(currentModel) {
   }
 
   select.value = currentModel;
+  wrapper.append(select);
+  return wrapper;
+}
+
+function getModelVariants(modelReference) {
+  const providerId = getProviderId(modelReference || "");
+  const modelId = getModelId(modelReference || "");
+  const model = (dashboardState?.providers || [])
+    .find((provider) => String(provider.id) === providerId)
+    ?.models?.find((entry) => String(entry.id) === modelId);
+  const variants = model?.variants;
+  if (!variants) return [];
+
+  const values = [];
+  const addValue = (value) => {
+    if (typeof value !== "string" || !value.trim()) return;
+    const normalized = value.trim().toLowerCase();
+    if (!values.includes(normalized)) values.push(normalized);
+  };
+
+  if (Array.isArray(variants)) {
+    for (const variant of variants) {
+      if (typeof variant === "string") {
+        addValue(variant);
+      } else if (variant && typeof variant === "object") {
+        const valueKeys = ["id", "key", "name", "value", "variant"];
+        const hasValueKey = valueKeys.some((key) => typeof variant[key] === "string" && variant[key].trim());
+        if (hasValueKey) valueKeys.forEach((key) => addValue(variant[key]));
+        else Object.keys(variant).forEach(addValue);
+      }
+    }
+  } else if (typeof variants === "object") {
+    Object.keys(variants).forEach(addValue);
+  }
+
+  return values;
+}
+
+function createEffortSelect(currentEffort, modelReference) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "effort-select-wrap";
+  const select = document.createElement("select");
+  select.className = "effort-select";
+  select.setAttribute("aria-label", "Agent effort");
+  const normalizedEffort = typeof currentEffort === "string" ? currentEffort.toLowerCase() : "";
+  const effortOptions = ["", ...getModelVariants(modelReference)];
+
+  for (const value of effortOptions) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value ? value[0].toUpperCase() + value.slice(1) : "Default";
+    option.selected = value === normalizedEffort;
+    select.append(option);
+  }
   wrapper.append(select);
   return wrapper;
 }
@@ -491,13 +555,16 @@ function createAgentRow(agent, index) {
   const modelCell = document.createElement("td");
   modelCell.append(createModelSelect(agent.model));
 
+  const effortCell = document.createElement("td");
+  effortCell.append(createEffortSelect(agent.effort, agent.model));
+
   const priceCell = document.createElement("td");
   priceCell.className = "price-column";
 
   const stabilityCell = document.createElement("td");
   stabilityCell.className = "stability-column";
 
-  row.append(dragCell, agentCell, modelCell, priceCell, stabilityCell);
+  row.append(dragCell, agentCell, modelCell, effortCell, priceCell, stabilityCell);
   updateRowPrice(row, agent.model);
   return row;
 }
@@ -1180,6 +1247,7 @@ function renderState(state) {
   dashboardState = state;
   const agents = applyStoredOrder(Array.isArray(state.agents) ? state.agents : []);
   loadedModels = new Map(agents.map((agent) => [agent.name, agent.model]));
+  loadedEfforts = new Map(agents.map((agent) => [agent.name, typeof agent.effort === "string" ? agent.effort.toLowerCase() : ""]));
   loadedOrder = agents.map((agent) => agent.name);
 
   elements.tableBody.replaceChildren(...agents.map(createAgentRow));
@@ -1223,6 +1291,7 @@ function renderState(state) {
 function showLoadError(error) {
   dashboardState = null;
   loadedModels = new Map();
+  loadedEfforts = new Map();
   elements.tableFrame.setAttribute("aria-busy", "false");
   elements.tableBody.closest("table").hidden = true;
   elements.emptyState.hidden = false;
@@ -1282,6 +1351,7 @@ async function saveChanges() {
     }
 
     loadedModels = new Map(agents.map((agent) => [agent.name, agent.model]));
+    loadedEfforts = new Map(agents.map((agent) => [agent.name, agent.effort]));
     loadedOrder = agents.map((agent) => agent.name);
     persistOrder();
     elements.presetBadge.textContent = result.presetName || dashboardState.presetName || "default";
@@ -1319,9 +1389,14 @@ function clearDragClasses() {
 }
 
 elements.tableBody.addEventListener("change", (event) => {
-  if (!event.target.matches(".model-select")) return;
+  if (!event.target.matches(".model-select, .effort-select")) return;
   const row = event.target.closest(".agent-row");
-  updateRowPrice(row, event.target.value);
+  if (event.target.matches(".model-select")) {
+    const effortSelect = row.querySelector(".effort-select");
+    const effortCell = effortSelect.closest("td");
+    effortCell.replaceChildren(createEffortSelect(effortSelect.value, event.target.value));
+    updateRowPrice(row, event.target.value);
+  }
   updateDirtyState();
 });
 
