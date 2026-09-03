@@ -11,7 +11,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { spawn } = require("node:child_process");
-const { deployModel, ensureProviderApiKey } = require("./scripts/deploy-opencode");
+const { deployModel, ensureProviderApiKey, formatModelName } = require("./scripts/deploy-opencode");
 const { syncTokens } = require("./scripts/sync-token");
 const { discoverRelay, verifyRelay, parseGeiliBundle, parseNewApiPricing, resolveEnvChain } = require("./scripts/discover-relay");
 const { NoticeStore } = require("./scripts/notices");
@@ -70,15 +70,23 @@ const DEFAULT_RELAY = {
     storageKeys: { auth_token: 100 },
     cookieNames: ["token", "access_token", "session_token"],
     excludePattern: "(refresh|expires|user)",
-    chromePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   },
   providerTemplate: {
-    npm: "@ai-sdk/openai",
+    npm: "@ai-sdk/openai-compatible",
     baseURL: "https://sub.geiliapi.com/v1",
     apiKeyEnvPrefix: "GEILI_",
     defaults: { context: 128000, output: 8192 },
   },
 };
+
+function resolveOpencodeConfigPath(userPath) {
+  if (userPath && fs.existsSync(userPath)) return userPath;
+  const jsonc = path.join(HOMEDIR, ".config", "opencode", "opencode.jsonc");
+  if (fs.existsSync(jsonc)) return jsonc;
+  const json = path.join(HOMEDIR, ".config", "opencode", "opencode.json");
+  if (fs.existsSync(json)) return json;
+  return userPath || jsonc;
+}
 
 function loadConfig() {
   const file = path.join(ROOT, "config.json");
@@ -98,7 +106,7 @@ function loadConfig() {
     for (const r of Object.values(relays)) { delete r.port; normalizeRelayKeys(r); }
     return {
       port: user.port || process.env.PORT || 6388,
-      opencodeConfigPath: user.opencodeConfigPath || path.join(HOMEDIR, ".config", "opencode", "opencode.jsonc"),
+      opencodeConfigPath: resolveOpencodeConfigPath(user.opencodeConfigPath),
       slimConfigPath: user.slimConfigPath || path.join(HOMEDIR, ".config", "opencode", "oh-my-opencode-slim.json"),
       dataDir: user.dataDir || ROOT,
       relays,
@@ -106,7 +114,7 @@ function loadConfig() {
   } catch {
     return {
       port: process.env.PORT || 6388,
-      opencodeConfigPath: path.join(HOMEDIR, ".config", "opencode", "opencode.jsonc"),
+      opencodeConfigPath: resolveOpencodeConfigPath(),
       slimConfigPath: path.join(HOMEDIR, ".config", "opencode", "oh-my-opencode-slim.json"),
       dataDir: ROOT,
       relays: { geiliapi: DEFAULT_RELAY },
@@ -1029,21 +1037,72 @@ async function readBody(req) {
   });
 }
 
+function resolveBrowserExecutable(sync = {}) {
+  if (sync.chromePath && fs.existsSync(sync.chromePath)) {
+    return { path: sync.chromePath, type: "chrome" };
+  }
+  const localAppData = process.env.LOCALAPPDATA || path.join(HOMEDIR, "AppData", "Local");
+  const progFiles = process.env.ProgramFiles || "C:\\Program Files";
+  const progFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+
+  const chromeCandidates = [
+    path.join(progFiles, "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(progFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
+  ];
+  for (const p of chromeCandidates) {
+    if (fs.existsSync(p)) return { path: p, type: "chrome" };
+  }
+
+  try {
+    const { execFileSync } = require("child_process");
+    const out = execFileSync("reg", ["query", "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe", "/ve"], { encoding: "utf8", windowsHide: true });
+    const match = out.match(/REG_SZ\s+(.*\.exe)/i);
+    if (match && fs.existsSync(match[1].trim())) {
+      return { path: match[1].trim(), type: "chrome" };
+    }
+  } catch {}
+
+  const edgeCandidates = [
+    path.join(progFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
+    path.join(progFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
+    path.join(localAppData, "Microsoft", "Edge", "Application", "msedge.exe"),
+  ];
+  for (const p of edgeCandidates) {
+    if (fs.existsSync(p)) return { path: p, type: "edge" };
+  }
+
+  return { path: null, type: null };
+}
+
 function launchDebugChrome(relay) {
   const sync = relay.tokenSync || {};
-  const chromePath = sync.chromePath || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-  if (!fs.existsSync(chromePath)) return { ok: false, error: `chrome.exe not found at ${chromePath} (set relays.<id>.tokenSync.chromePath)` };
+  const browserInfo = resolveBrowserExecutable(sync);
+  if (!browserInfo.path) {
+    return { ok: false, error: "No Chromium browser (Chrome or Edge) found. Please install Chrome or specify relays.<id>.tokenSync.chromePath in config.json" };
+  }
+  const browserPath = browserInfo.path;
+  const isEdge = browserInfo.type === "edge";
 
   const localAppData = process.env.LOCALAPPDATA || path.join(HOMEDIR, "AppData", "Local");
-  const sourceProfile = sync.sourceProfileDir || path.join(localAppData, "Google", "Chrome", "User Data");
-  const debugProfile = sync.debugProfileDir || path.join(localAppData, "Google", "Chrome", "Slim Dashboard Debug User Data");
+  const defaultSource = isEdge
+    ? path.join(localAppData, "Microsoft", "Edge", "User Data")
+    : path.join(localAppData, "Google", "Chrome", "User Data");
+  const defaultDebug = isEdge
+    ? path.join(localAppData, "Microsoft", "Edge", "Slim Dashboard Debug User Data")
+    : path.join(localAppData, "Google", "Chrome", "Slim Dashboard Debug User Data");
+
+  const sourceProfile = sync.sourceProfileDir || defaultSource;
+  const debugProfile = sync.debugProfileDir || defaultDebug;
 
   // First run only: clone the default profile (minus caches) so existing
   // relay logins carry over into the debug instance.
   if (!fs.existsSync(path.join(debugProfile, "Local State"))) {
     try {
       fs.mkdirSync(debugProfile, { recursive: true });
-      fs.copyFileSync(path.join(sourceProfile, "Local State"), path.join(debugProfile, "Local State"));
+      if (fs.existsSync(path.join(sourceProfile, "Local State"))) {
+        fs.copyFileSync(path.join(sourceProfile, "Local State"), path.join(debugProfile, "Local State"));
+      }
       const srcDefault = path.join(sourceProfile, "Default");
       if (fs.existsSync(srcDefault)) {
         const exclude = new Set(["cache", "code cache", "gpucache", "dawncache", "shadercache", "grshadercache", "crashpad", "browsermetrics", "media cache", "componentcrcache", "temp file"]);
@@ -1067,7 +1126,7 @@ function launchDebugChrome(relay) {
   // /monitor is a GeiliAPI-specific page; other relays open their bare base URL.
   const hint = relay.type === "geiliapi" ? sync.authPageHint || "" : "";
   const startUrl = sync.startUrl || `${relay.baseURL}${hint}`;
-  const child = spawn(chromePath, [
+  const child = spawn(browserPath, [
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${debugProfile}`,
     "--profile-directory=Default",
@@ -1075,7 +1134,7 @@ function launchDebugChrome(relay) {
     startUrl,
   ], { detached: true, stdio: "ignore", windowsHide: false });
   child.unref();
-  return { ok: true, url: startUrl, port, message: `Debug Chrome launched on port ${port}; open ${startUrl}` };
+  return { ok: true, url: startUrl, port, message: `Debug browser launched on port ${port}; open ${startUrl}` };
 }
 
 function launchDebugChromeForRelays(relayId) {
@@ -1149,17 +1208,34 @@ function normalizeRelayKeys(relay) {
   return relay.apiKeys;
 }
 
+const FAMILY_KEY_PRIORITIES = {
+  anthropic: ["anthropic", "claude"],
+  openai: ["openai", "gpt"],
+  gemini: ["gemini", "google"],
+  grok: ["xai", "grok"],
+  deepseek: ["deepseek", "zhipu", "chaosuan", "domestic"],
+  qwen: ["qwen", "qwq", "zhipu", "chaosuan", "domestic"],
+  moonshot: ["moonshot", "kimi", "zhipu", "chaosuan", "domestic"],
+  zhipu: ["zhipu", "glm", "chaosuan", "domestic"],
+  minimax: ["minimax", "zhipu", "chaosuan", "domestic"],
+  xiaomi: ["xiaomi", "mimo", "zhipu", "chaosuan", "domestic"],
+};
+
 function pickApiKey(relay, modelId, relayId) {
   const keys = relayId ? getEffectiveApiKeys(relayId) : normalizeRelayKeys(relay);
   if (!keys.length) return null;
-  const fam = familyOf(modelId);
-  const byLabel = (l) => keys.find((k) => k.label.toLowerCase() === l);
-  // Strict: exact family label, label containing the family, or "default".
-  const key =
-    byLabel(fam) ||
-    keys.find((k) => k.label.toLowerCase().includes(fam)) ||
-    byLabel("default");
-  return key || null;
+  const fam = familyOf(modelId).toLowerCase();
+  const priorities = FAMILY_KEY_PRIORITIES[fam] || [fam];
+
+  for (const alias of priorities) {
+    const found = keys.find((k) => k.label.toLowerCase() === alias);
+    if (found) return found;
+  }
+  for (const alias of priorities) {
+    const found = keys.find((k) => k.label.toLowerCase().includes(alias) || alias.includes(k.label.toLowerCase()));
+    if (found) return found;
+  }
+  return keys.find((k) => k.label.toLowerCase() === "default") || null;
 }
 
 function hostOfUrl(url) {
@@ -1312,24 +1388,31 @@ const server = http.createServer(async (req, res) => {
       if (!body.relay || !CONFIG.relays[body.relay]) throw new Error("relay is required");
       const relayId = body.relay;
       const relay = CONFIG.relays[relayId];
+      const fam = familyOf(body.model);
+      const famLabel = fam[0].toUpperCase() + fam.slice(1);
+      const relayTitle = relay.name || relayId;
+      const providerName = body.providerName || `${relayTitle} (${famLabel})`;
+      const modelName = body.name || formatModelName(body.model);
+
+      const resolvedKey = pickApiKey(relay, body.model, relayId);
+      const rawApiKey = (resolvedKey?.key) || (typeof body.apiKey === "string" ? body.apiKey : body.apiKey?.key) || undefined;
+
       const result = deployModel(CONFIG.opencodeConfigPath, body.provider, body.model, {
-        modelName: body.name,
+        modelName,
         context: body.context,
         output: body.output,
-        apiKey: pickApiKey(relay, body.model, relayId) || body.apiKey || undefined,
+        apiKey: rawApiKey,
         providerTemplate: relay.providerTemplate,
-        providerName: body.providerName,
+        providerName,
       });
 
       // Register a price mapping so the deployed model shows up under
       // Model health with live pricing (stability needs a channel match and
       // stays "–" until the user maps one).
       if (result.ok) {
-        // Keep API keys as {env:...} placeholders in opencode.jsonc.
-        const resolvedKey = pickApiKey(relay, body.model, relayId);
-        if (resolvedKey) {
-          const keyResult = ensureProviderApiKey(CONFIG.opencodeConfigPath, body.provider, resolvedKey.key);
-          if (keyResult.changed) result.message += ` + API key [${resolvedKey.label}] configured`;
+        if (rawApiKey) {
+          const keyResult = ensureProviderApiKey(CONFIG.opencodeConfigPath, body.provider, rawApiKey);
+          if (keyResult.changed) result.message += ` + API key [${resolvedKey?.label || "custom"}] configured`;
         }
         const existingMapping = relay.providers?.[body.provider] || {};
         const hasExistingMapping = Boolean(relay.providers && Object.prototype.hasOwnProperty.call(relay.providers, body.provider));

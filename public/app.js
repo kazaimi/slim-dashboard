@@ -787,8 +787,8 @@ function familyOf(modelId) {
 const VENDOR_RULES = [
   { id: "openai", label: "OpenAI", re: /^gpt|^o\d|^chatgpt|davinci|codex/ },
   { id: "anthropic", label: "Anthropic Claude", re: /claude/ },
-  { id: "google", label: "Google Gemini", re: /gemini|palm|bard|gemma/ },
-  { id: "xai", label: "xAI Grok", re: /grok/ },
+  { id: "gemini", label: "Google Gemini", re: /gemini|palm|bard|gemma/ },
+  { id: "grok", label: "xAI Grok", re: /grok/ },
   { id: "deepseek", label: "DeepSeek", re: /deepseek/ },
   { id: "zhipu", label: "智谱 GLM", re: /glm|thudm|cogview|cogvideo/ },
   { id: "moonshot", label: "Moonshot Kimi", re: /kimi|moonshot|^k\d/ },
@@ -841,41 +841,207 @@ function compareModelsNewestFirst(a, b) {
   return a.localeCompare(b);
 }
 
+const KNOWN_MODEL_NAMES = {
+  // GeiliAPI Relay & Mainstream Models
+  // 1. OpenAI
+  "gpt-5.6-terra": "GPT-5.6 Terra",
+  "gpt-5.6-sol": "GPT-5.6 Sol",
+  "gpt-5.6-luna": "GPT-5.6 Luna",
+  "gpt-5.6": "GPT-5.6",
+  "gpt-5.5": "GPT-5.5",
+  "gpt-5.4": "GPT-5.4",
+  "gpt-5.4-mini": "GPT-5.4 mini",
+  "gpt-5.2": "GPT-5.2",
+  "gpt-5.2-pro": "GPT-5.2 Pro",
+  "gpt-4o": "GPT-4o",
+  "gpt-4o-mini": "GPT-4o mini",
+  "gpt-4o-realtime-preview": "GPT-4o Realtime",
+  "gpt-4-turbo": "GPT-4 Turbo",
+  "gpt-4": "GPT-4",
+  "gpt-3.5-turbo": "GPT-3.5 Turbo",
+  "chatgpt-4o-latest": "ChatGPT-4o",
+  "o1": "o1",
+  "o1-preview": "o1-preview",
+  "o1-mini": "o1-mini",
+  "o3-mini": "o3-mini",
+  "o3-mini-high": "o3-mini (High)",
+
+  // 2. Claude
+  "claude-opus-5": "Claude Opus 5",
+  "claude-opus-4-8": "Claude Opus 4.8",
+  "claude-opus-4-7": "Claude Opus 4.7",
+  "claude-opus-4-6": "Claude Opus 4.6",
+  "claude-sonnet-5": "Claude Sonnet 5",
+  "claude-sonnet-4-6": "Claude Sonnet 4.6",
+  "claude-haiku-4-5": "Claude Haiku 4.5",
+  "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+  "claude-fable-5": "Claude Fable 5",
+  "claude-3-7-sonnet-latest": "Claude 3.7 Sonnet",
+  "claude-3-7-sonnet-20250219": "Claude 3.7 Sonnet",
+  "claude-3-7-sonnet-thought": "Claude 3.7 Sonnet (Thinking)",
+  "claude-3-5-sonnet-latest": "Claude 3.5 Sonnet",
+  "claude-3-5-sonnet-20241022": "Claude 3.5 Sonnet",
+  "claude-3-5-haiku-latest": "Claude 3.5 Haiku",
+  "claude-3-opus-latest": "Claude 3 Opus",
+
+  // 3. Gemini
+  "gemini-3.5-flash": "Gemini 3.5 Flash",
+  "gemini-3.5-flash-thinking": "Gemini 3.5 Flash Thinking",
+  "gemini-3.1-pro": "Gemini 3.1 Pro",
+  "gemini-3.1-pro-thinking": "Gemini 3.1 Pro Thinking",
+  "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
+  "gemini-3.1-flash-lite-thinking": "Gemini 3.1 Flash Lite Thinking",
+  "gemini-2.0-flash": "Gemini 2.0 Flash",
+  "gemini-2.0-flash-exp": "Gemini 2.0 Flash Exp",
+  "gemini-2.0-flash-thinking-exp": "Gemini 2.0 Flash Thinking",
+  "gemini-2.0-flash-lite-preview": "Gemini 2.0 Flash Lite",
+  "gemini-2.0-pro-exp": "Gemini 2.0 Pro Exp",
+  "gemini-1.5-pro": "Gemini 1.5 Pro",
+  "gemini-1.5-flash": "Gemini 1.5 Flash",
+
+  // 4. Grok
+  "grok-4.6": "Grok 4.6",
+  "grok-4.5": "Grok 4.5",
+  "grok-3-mini": "Grok 3 mini",
+  "grok-3": "Grok 3",
+  "grok-2": "Grok 2",
+
+  // 5. DeepSeek
+  "deepseek-v4-pro": "DeepSeek V4 Pro",
+  "deepseek-v4-flash": "DeepSeek V4 Flash",
+  "deepseek-v4-flash-vision-exp": "DeepSeek V4 Flash Vision",
+  "deepseek-chat": "DeepSeek V3",
+  "deepseek-reasoner": "DeepSeek R1",
+  "deepseek-v3": "DeepSeek V3",
+  "deepseek-r1": "DeepSeek R1",
+
+  // 6. 智谱 GLM
+  "glm-5.3-flash": "GLM-5.3 Flash",
+  "glm-5.3": "GLM-5.3",
+  "glm-5.2": "GLM-5.2",
+  "glm-5.1": "GLM-5.1",
+
+  // 7. Kimi
+  "kimi-k3": "Kimi K3",
+  "kimi-k2.7-code": "Kimi K2.7 Code",
+  "kimi-k2.6": "Kimi K2.6",
+  "kimi-k2.5": "Kimi K2.5",
+
+  // 8. Qwen
+  "qwen3.8-max": "Qwen 3.8 Max",
+  "qwen3.7-max": "Qwen 3.7 Max",
+  "qwen3.7-plus": "Qwen 3.7 Plus",
+  "qwen3.6-plus": "Qwen 3.6 Plus",
+  "qwen3.5-plus": "Qwen 3.5 Plus",
+};
+
+const MODEL_WORD_MAP = {
+  gpt: "GPT", claude: "Claude", gemini: "Gemini", deepseek: "DeepSeek",
+  qwen: "Qwen", qwq: "QwQ", grok: "Grok", glm: "GLM", kimi: "Kimi",
+  moonshot: "Moonshot", minimax: "MiniMax", mimo: "MiMo", llama: "LLaMA",
+  mistral: "Mistral", yi: "Yi", baichuan: "Baichuan", hunyuan: "Hunyuan",
+  ernie: "ERNIE", dall: "DALL", tts: "TTS", asr: "ASR", r1: "R1",
+  v1: "V1", v2: "V2", v3: "V3", v4: "V4", pro: "Pro", flash: "Flash",
+  lite: "Lite", mini: "mini", turbo: "Turbo", plus: "Plus", max: "Max",
+  ultra: "Ultra", vision: "Vision", thinking: "Thinking", thought: "Thinking",
+  coder: "Coder", chat: "Chat", instruct: "Instruct", preview: "Preview", latest: "Latest",
+};
+
+function formatModelName(modelId) {
+  if (!modelId) return "";
+  const raw = String(modelId).trim();
+  const lower = raw.toLowerCase();
+  if (KNOWN_MODEL_NAMES[lower]) return KNOWN_MODEL_NAMES[lower];
+
+  let base = raw;
+  const dateSuffixMatch = base.match(/^(.+?)[-_](20\d{6})$/);
+  if (dateSuffixMatch) base = dateSuffixMatch[1];
+
+  const tokens = base.split(/[-_/ ]+/).filter(Boolean);
+  const formattedTokens = tokens.map((tok) => {
+    if (/^\d+-\d+$/.test(tok)) return tok.replace("-", ".");
+    const tokLower = tok.toLowerCase();
+    if (MODEL_WORD_MAP[tokLower]) return MODEL_WORD_MAP[tokLower];
+    if (/^o\d(-mini|-preview)?$/i.test(tok)) return tok.toLowerCase();
+    return /^\d/.test(tok) ? tok : tok[0].toUpperCase() + tok.slice(1);
+  });
+
+  let joined = formattedTokens.join(" ");
+  joined = joined.replace(/\b(Claude|Gemini|GPT)\s+(\d+)\s+(\d+)\b/gi, "$1 $2.$3");
+  joined = joined.replace(/\bDeepseek\b/gi, "DeepSeek");
+  return joined;
+}
+
 function hostOf(url) {
   try { return new URL(url).hostname; } catch { return ""; }
 }
 
-// Derive a provider-name prefix for a relay. Priority:
-// 1. explicit relay.providerPrefix from config
-// 2. an existing opencode provider pointing at the same API host (nan.meta-api.vip -> "nan")
-// 3. an already-mapped provider of this relay
-// 4. first label of the domain, then the relay id
-function relayPrefix(state, relayId, relay) {
-  if (relay?.providerPrefix) return String(relay.providerPrefix);
-  const host = hostOf(relay?.baseURL);
-  const sameHost = (state.providers || []).find((p) => hostOf(p.baseURL) === host && p.id.includes("_"));
-  if (sameHost) return sameHost.id.split("_")[0];
-  const mapped = Object.entries(state.providerMap || {}).find(
-    ([pid, m]) => (m.relay || "geiliapi") === relayId && pid.includes("_")
-  );
-  if (mapped) return mapped[0].split("_")[0];
-  const dom = host ? host.split(".")[0] : "";
-  return dom || relayId || "relay";
+function extractHostBrand(host) {
+  if (!host) return "";
+  const parts = host.split(".").filter(Boolean);
+  if (parts.length <= 1) return parts[0] || "";
+  const ignoredSubdomains = new Set(["sub", "api", "v1", "v2", "gateway", "open", "ai", "app", "chat", "one", "new"]);
+  if (parts.length >= 2 && ignoredSubdomains.has(parts[0].toLowerCase())) {
+    return parts[1];
+  }
+  return parts[0];
 }
 
-function suggestProviderId(state, prefix, modelId) {
+// Derive a provider-name prefix for a relay.
+function relayPrefix(state, relayId, relay) {
+  if (relay?.providerPrefix) return String(relay.providerPrefix);
+  if (relayId && relayId !== "default") {
+    if (relayId === "geiliapi") return "geili";
+    return relayId.replace(/[^a-zA-Z0-9_-]/g, "").toLowerCase();
+  }
+  const host = hostOf(relay?.baseURL);
+  const brand = extractHostBrand(host);
+  if (brand) return brand.toLowerCase();
+  return "relay";
+}
+
+function suggestProviderInfo(state, relayId, relay, modelId) {
+  const prefix = relayPrefix(state, relayId, relay);
+  let fam = familyOf(modelId);
   const taken = new Set((state.providers || []).map((p) => p.id));
-  let id = `${prefix}_${familyOf(modelId)}`;
+  const famId = fam === "moonshot" ? "kimi" : fam;
+  let id = `${prefix}_${famId}`;
   let n = 2;
-  while (taken.has(id)) id = `${prefix}_${familyOf(modelId)}_${n++}`;
-  return id;
+  while (taken.has(id)) id = `${prefix}_${famId}_${n++}`;
+
+  const relayName = relay?.name || relayId || prefix;
+  const v = vendorOf(modelId);
+  let familyLabel = v.label ? v.label.replace(/^.*? /, "") : (fam[0].toUpperCase() + fam.slice(1));
+  if (fam === "anthropic") familyLabel = "Claude";
+  if (fam === "moonshot") familyLabel = "Kimi";
+  if (fam === "zhipu") familyLabel = "GLM";
+  const name = `${relayName} (${familyLabel})`;
+  return { id, name };
+}
+
+function providerMatchesFamily(providerId, fam) {
+  const pid = String(providerId || "").toLowerCase();
+  const f = String(fam || "").toLowerCase();
+  if (f === "anthropic" && (pid.includes("anthropic") || pid.includes("claude"))) return true;
+  if (f === "openai" && (pid.includes("openai") || pid.includes("gpt"))) return true;
+  if (f === "gemini" && (pid.includes("gemini") || pid.includes("google"))) return true;
+  if (f === "grok" && (pid.includes("grok") || pid.includes("xai"))) return true;
+  if (f === "deepseek" && (pid.includes("deepseek") || pid.includes("chaosuan"))) return true;
+  if (f === "qwen" && (pid.includes("qwen") || pid.includes("chaosuan"))) return true;
+  if (f === "moonshot" && (pid.includes("moonshot") || pid.includes("kimi") || pid.includes("chaosuan"))) return true;
+  if (f === "zhipu" && (pid.includes("zhipu") || pid.includes("glm") || pid.includes("chaosuan"))) return true;
+  if (f === "minimax" && (pid.includes("minimax") || pid.includes("chaosuan"))) return true;
+  if (f === "xiaomi" && (pid.includes("mimo") || pid.includes("chaosuan"))) return true;
+  return pid.includes(f);
 }
 
 function buildTargetSelect(state, relayId, modelId, relay) {
   const select = document.createElement("select");
   select.className = "group-select target-select";
-  const prefix = relayPrefix(state, relayId, relay);
+  const fam = familyOf(modelId);
+  const suggestion = suggestProviderInfo(state, relayId, relay, modelId);
   const seen = new Set();
+  let matchedOptionValue = null;
 
   // 1) providers already mapped to this relay
   for (const [pid, m] of Object.entries(state.providerMap || {})) {
@@ -885,10 +1051,12 @@ function buildTargetSelect(state, relayId, modelId, relay) {
     option.value = pid;
     option.textContent = pid;
     select.append(option);
+    if (!matchedOptionValue && providerMatchesFamily(pid, fam)) {
+      matchedOptionValue = pid;
+    }
   }
 
-  // 2) existing providers on the same API host (e.g. nan_openai) — deploying
-  //    into them just adds the model alongside their current ones.
+  // 2) existing providers on the same API host
   const host = hostOf(relay?.baseURL);
   if (host) {
     for (const p of state.providers || []) {
@@ -898,28 +1066,49 @@ function buildTargetSelect(state, relayId, modelId, relay) {
       option.value = p.id;
       option.textContent = `${p.id} (已有)`;
       select.append(option);
+      if (!matchedOptionValue && providerMatchesFamily(p.id, fam)) {
+        matchedOptionValue = p.id;
+      }
     }
   }
 
-  const suggestion = suggestProviderId(state, prefix, modelId);
+  // Add "+ new provider" option
   const newOption = document.createElement("option");
   newOption.value = "__new__";
-  newOption.dataset.suggest = suggestion;
-  newOption.textContent = `+ ${suggestion}`;
+  newOption.dataset.suggest = suggestion.id;
+  newOption.dataset.suggestName = suggestion.name;
+  newOption.textContent = `+ ${suggestion.id} (${suggestion.name})`;
   select.append(newOption);
-  if (!seen.size) select.value = "__new__";
+
+  // If there's an existing provider matching this model's family, select it;
+  // otherwise default to __new__!
+  if (matchedOptionValue) {
+    select.value = matchedOptionValue;
+  } else {
+    select.value = "__new__";
+  }
   return select;
 }
 
-async function deployCatalogModel(state, modelId, groupId, targetProvider, relayId, button, suggestedId) {
+async function deployCatalogModel(state, modelId, groupId, targetProvider, relayId, button, suggestedId, suggestedName) {
   button.disabled = true;
   button.textContent = "Deploying…";
   try {
-    const providerId = targetProvider === "__new__" ? suggestedId : targetProvider;
+    const isNew = targetProvider === "__new__";
+    const providerId = isNew ? suggestedId : targetProvider;
+    const providerName = isNew ? suggestedName : undefined;
+    const modelName = formatModelName(modelId);
     const response = await fetch("/api/deploy", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ provider: providerId, model: modelId, relay: relayId, group: groupId }),
+      body: JSON.stringify({
+        provider: providerId,
+        providerName,
+        model: modelId,
+        name: modelName,
+        relay: relayId,
+        group: groupId,
+      }),
     });
     const result = await response.json().catch(() => null);
     if (!response.ok || !result?.ok) throw new Error(result?.error || "deploy rejected");
@@ -932,17 +1121,35 @@ async function deployCatalogModel(state, modelId, groupId, targetProvider, relay
   }
 }
 
+const FAMILY_KEY_PRIORITIES = {
+  anthropic: ["anthropic", "claude"],
+  openai: ["openai", "gpt"],
+  gemini: ["gemini", "google"],
+  grok: ["xai", "grok"],
+  deepseek: ["deepseek", "zhipu", "chaosuan", "domestic"],
+  qwen: ["qwen", "qwq", "zhipu", "chaosuan", "domestic"],
+  moonshot: ["moonshot", "kimi", "zhipu", "chaosuan", "domestic"],
+  zhipu: ["zhipu", "glm", "chaosuan", "domestic"],
+  minimax: ["minimax", "zhipu", "chaosuan", "domestic"],
+  xiaomi: ["xiaomi", "mimo", "zhipu", "chaosuan", "domestic"],
+};
+
 function resolveKeyLabel(state, relayId, modelId) {
   const keys = state.relays?.[relayId]?.apiKeys || [];
   if (!keys.length) return null;
-  const fam = familyOf(modelId);
-  // Strict matching: exact label, label containing the family name, or an
-  // explicit "default" tag. No silent fallback to the first key.
-  const match =
-    keys.find((k) => k.label.toLowerCase() === fam) ||
-    keys.find((k) => k.label.toLowerCase().includes(fam)) ||
-    keys.find((k) => k.label.toLowerCase() === "default");
-  return match ? match.label : null;
+  const fam = familyOf(modelId).toLowerCase();
+  const priorities = FAMILY_KEY_PRIORITIES[fam] || [fam];
+
+  for (const alias of priorities) {
+    const found = keys.find((k) => k.label.toLowerCase() === alias);
+    if (found) return found.label;
+  }
+  for (const alias of priorities) {
+    const found = keys.find((k) => k.label.toLowerCase().includes(alias) || alias.includes(k.label.toLowerCase()));
+    if (found) return found.label;
+  }
+  const def = keys.find((k) => k.label.toLowerCase() === "default");
+  return def ? def.label : null;
 }
 
 function resolveKeyHint(state, relayId, modelId) {
@@ -1016,6 +1223,7 @@ function createCatalogRow(state, modelId, relayId, table) {
   deployBtn.addEventListener("click", () => {
     const mapping = state.providerMap?.[targetSelect.value];
     const useRelay = relayId || mapping?.relay || Object.keys(state.relays || {})[0];
+    const selOpt = targetSelect.selectedOptions[0];
     deployCatalogModel(
       state,
       modelId,
@@ -1023,7 +1231,8 @@ function createCatalogRow(state, modelId, relayId, table) {
       targetSelect.value,
       useRelay,
       deployBtn,
-      targetSelect.selectedOptions[0]?.dataset.suggest
+      selOpt?.dataset.suggest,
+      selOpt?.dataset.suggestName
     );
   });
   actionCell.append(deployBtn);

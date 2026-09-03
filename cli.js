@@ -19,14 +19,27 @@ function flag(name) {
   return i !== -1 ? args[i + 1] : undefined;
 }
 
+function resolveDefaultOpencodeConfig() {
+  const fs = require("fs");
+  const home = process.env.USERPROFILE || process.env.HOME || require("os").homedir();
+  const jsonc = path.join(home, ".config", "opencode", "opencode.jsonc");
+  if (fs.existsSync(jsonc)) return jsonc;
+  const json = path.join(home, ".config", "opencode", "opencode.json");
+  if (fs.existsSync(json)) return json;
+  return jsonc;
+}
+
 function loadMainConfig() {
   const fs = require("fs");
   try {
-    return JSON.parse(fs.readFileSync(path.join(ROOT, "config.json"), "utf8"));
-  } catch {
-    const os = require("os");
+    const user = JSON.parse(fs.readFileSync(path.join(ROOT, "config.json"), "utf8"));
     return {
-      opencodeConfigPath: path.join(os.homedir(), ".config", "opencode", "opencode.jsonc"),
+      opencodeConfigPath: user.opencodeConfigPath || resolveDefaultOpencodeConfig(),
+      relays: user.relays || {},
+    };
+  } catch {
+    return {
+      opencodeConfigPath: resolveDefaultOpencodeConfig(),
       relays: {},
     };
   }

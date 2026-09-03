@@ -1,7 +1,9 @@
 On Error Resume Next
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
-launcher = "C:\Users\alex.xu\Desktop\work\软件分析\启动SlimDashboard.cmd"
+root = fso.GetParentFolderName(WScript.ScriptFullName)
+
+launcher = root & "\launch-slim-dashboard.vbs"
 If fso.FileExists(launcher) Then
-  shell.Run """" & launcher & """", 0, False
+  shell.Run "wscript.exe """ & launcher & """", 0, False
 End If

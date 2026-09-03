@@ -8,19 +8,30 @@ Option Explicit
 
 Const HEALTH_URL = "http://127.0.0.1:6388/api/health"
 Const DASH_URL = "http://localhost:6388"
-Const NODE_FALLBACK = "C:\Program Files\nodejs\node.exe"
-
 Dim shell, fso, root
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
 
+Function FindNode()
+  Dim candidates, p
+  candidates = Array( _
+    "C:\Program Files\nodejs\node.exe", _
+    "C:\Program Files (x86)\nodejs\node.exe", _
+    shell.ExpandEnvironmentStrings("%LOCALAPPDATA%\Programs\node\node.exe"), _
+    shell.ExpandEnvironmentStrings("%APPDATA%\nvm\current\node.exe") _
+  )
+  For Each p In candidates
+    If fso.FileExists(p) Then
+      FindNode = p
+      Exit Function
+    End If
+  Next
+  FindNode = "node.exe"
+End Function
+
 Dim node
-If fso.FileExists(NODE_FALLBACK) Then
-  node = NODE_FALLBACK
-Else
-  node = "node.exe"
-End If
+node = FindNode()
 
 Function NodeProcessesMatching(fragment)
   Dim wmi, items, proc, count

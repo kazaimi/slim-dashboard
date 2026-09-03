@@ -1,6 +1,6 @@
 {
   "name": "slim-dashboard",
-  "version": "1.0.0",
+  "version": "0.3.0",
   "description": "Real-time model pricing & stability dashboard for OpenCode AI relay stations, with browser-based token sync and one-click model deployment.",
   "main": "server.js",
   "bin": {
